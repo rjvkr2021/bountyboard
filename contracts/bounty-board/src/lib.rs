@@ -36,6 +36,7 @@ pub trait Callbacks {
     fn on_sync_payout_proposal(&mut self, issue_id: IssueId);
     fn on_finalize_payout_proposal(&mut self, issue_id: IssueId);
     fn on_payout_transfer(&mut self, issue_id: IssueId, payout_id: PayoutId);
+    fn on_refund_transfer(&mut self, issue_id: IssueId, payout_id: PayoutId);
 }
 
 #[near(contract_state)]
@@ -1068,15 +1069,59 @@ impl BountyBoard {
             repo.committed = U128(repo.committed.0.saturating_sub(payout.amount.0));
         }
 
-        events::payout_refunded(
-            issue_id,
-            payout_id,
-            payout.recipient,
-            payout.amount.0,
-            payout.tier,
-            payout.points,
-        );
-        Ok(Promise::new(self.dao.clone()).transfer(NearToken::from_yoctonear(payout.amount.0)))
+        Ok(Promise::new(self.dao.clone())
+            .transfer(NearToken::from_yoctonear(payout.amount.0))
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_TRANSFER_CALLBACK))
+                    .on_refund_transfer(issue_id, payout_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_refund_transfer(
+        &mut self,
+        issue_id: IssueId,
+        payout_id: PayoutId,
+        #[callback_result] result: Result<(), PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        let Some(mut payout) = self.payouts.get(&payout_id).cloned() else {
+            return;
+        };
+
+        match result {
+            Ok(()) => {
+                events::payout_refunded(
+                    issue_id,
+                    payout_id,
+                    payout.recipient,
+                    payout.amount.0,
+                    payout.tier,
+                    payout.points,
+                );
+            }
+            Err(_) => {
+                issue.status = IssueStatus::PayoutFailed;
+                self.issues.insert(issue_id, issue);
+                if let Some(repo) = self.repos.get_mut(&REPO_ID) {
+                    repo.committed = U128(repo.committed.0.saturating_add(payout.amount.0));
+                }
+                payout.status = PayoutStatus::Failed;
+                payout.updated_at = env::block_timestamp();
+                self.payouts.insert(payout_id, payout.clone());
+                events::payout_failed(
+                    issue_id,
+                    payout_id,
+                    payout.recipient,
+                    payout.amount.0,
+                    payout.tier,
+                    payout.points,
+                );
+            }
+        }
     }
 
     fn apply_payout_reputation(&mut self, issue: &Issue, payout_id: PayoutId) {
@@ -3579,6 +3624,38 @@ mod tests {
         assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(0));
         let payout = contract.payouts.get(&0).unwrap();
         assert_eq!(payout.status, PayoutStatus::Refunded);
+    }
+
+    #[test]
+    fn refund_transfer_failure_restores_failed_state() {
+        let mut contract = failed_payout_setup();
+
+        contract.refund_payout(0).unwrap().detach();
+        contract.on_refund_transfer(0, 0, Err(PromiseError::Failed));
+
+        assert_eq!(
+            contract.get_issue(0).unwrap().status,
+            IssueStatus::PayoutFailed
+        );
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(10));
+        assert_eq!(
+            contract.payouts.get(&0).unwrap().status,
+            PayoutStatus::Failed
+        );
+    }
+
+    #[test]
+    fn refund_transfer_success_emits_event() {
+        let mut contract = failed_payout_setup();
+
+        contract.refund_payout(0).unwrap().detach();
+        contract.on_refund_transfer(0, 0, Ok(()));
+
+        assert!(
+            get_logs()
+                .iter()
+                .any(|log| log.contains("\"event\":\"payout_refunded\""))
+        );
     }
 
     #[test]
