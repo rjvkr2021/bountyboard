@@ -2,7 +2,7 @@ use near_sdk::json_types::U128;
 use near_sdk::{AccountId, env, near};
 use serde::Serialize;
 
-use crate::types::{IssueId, IssueStatus, RepoId, Tier};
+use crate::types::{IssueId, IssueStatus, MergeSource, RepoId, Tier};
 
 pub const EVENT_STANDARD: &str = "bountyboard";
 pub const EVENT_VERSION: &str = "1.0.0";
@@ -191,6 +191,31 @@ pub struct CouncilPromotionApproved {
     pub proposal_id: u64,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityLinked {
+    pub handle: String,
+    pub account: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IdentityUnlinked {
+    pub handle: String,
+    pub account: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyMerged {
+    pub issue_id: IssueId,
+    pub pr_number: u64,
+    pub pr_author_handle: String,
+    pub pr_author_account: Option<AccountId>,
+    pub commit: String,
+    pub source: MergeSource,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -259,6 +284,35 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             issue_id,
             maintainer,
             released: U128(released),
+        },
+    );
+}
+
+pub fn identity_linked(handle: String, account: AccountId) {
+    emit("identity_linked", &IdentityLinked { handle, account });
+}
+
+pub fn identity_unlinked(handle: String, account: AccountId) {
+    emit("identity_unlinked", &IdentityUnlinked { handle, account });
+}
+
+pub fn bounty_merged(
+    issue_id: IssueId,
+    pr_number: u64,
+    pr_author_handle: String,
+    pr_author_account: Option<AccountId>,
+    commit: String,
+    source: MergeSource,
+) {
+    emit(
+        "bounty_merged",
+        &BountyMerged {
+            issue_id,
+            pr_number,
+            pr_author_handle,
+            pr_author_account,
+            commit,
+            source,
         },
     );
 }

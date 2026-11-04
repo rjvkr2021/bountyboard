@@ -15,6 +15,7 @@ export const EnvSchema = z
     NEAR_RPC_URL: z.string().url().optional(),
     DAO_ACCOUNT: accountId,
     BOUNTYBOARD_ACCOUNT: accountId,
+    BOUNTYBOARD_CONTRACT_ID: accountId.optional(),
     FOUNDER_ACCOUNT: accountId,
     NEAR_ORACLE_ACCOUNT: accountId,
     NEAR_ORACLE_PRIVATE_KEY: optionalSecret,
@@ -52,6 +53,24 @@ export const EnvSchema = z
 
 export type Env = z.infer<typeof EnvSchema>;
 
+export type NetworkEnv = Pick<Env, "NEAR_NETWORK" | "NEAR_RPC_URL">;
+
+export const OracleEnvSchema = z
+  .object({
+    NEAR_NETWORK: z.enum(["testnet", "mainnet", "localnet"]).default("testnet"),
+    NEAR_RPC_URL: z.string().url().optional(),
+    BOUNTYBOARD_CONTRACT_ID: accountId,
+    NEAR_ORACLE_ACCOUNT: accountId,
+    NEAR_ORACLE_PRIVATE_KEY: z.string().min(1),
+    PR_BODY: z.string().default(""),
+    PR_NUMBER: z.coerce.number().int().positive(),
+    PR_AUTHOR: z.string().min(1),
+    PR_MERGE_COMMIT: z.string().min(1),
+  })
+  .passthrough();
+
+export type OracleEnv = z.infer<typeof OracleEnvSchema>;
+
 function withoutEmptyValues(
   source: NodeJS.ProcessEnv | Record<string, unknown>,
 ): Record<string, unknown> {
@@ -64,18 +83,32 @@ function withoutEmptyValues(
   return normalized;
 }
 
+function formatEnvError(error: z.ZodError): string {
+  const details = error.issues
+    .map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`)
+    .join("\n");
+  return `Invalid environment:\n${details}`;
+}
+
 export function parseEnv(source: NodeJS.ProcessEnv | Record<string, unknown>): Env {
   const result = EnvSchema.safeParse(withoutEmptyValues(source));
   if (!result.success) {
-    const details = result.error.issues
-      .map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`)
-      .join("\n");
-    throw new Error(`Invalid environment:\n${details}`);
+    throw new Error(formatEnvError(result.error));
   }
   return result.data;
 }
 
-export function rpcUrl(env: Env): string {
+export function parseOracleEnv(
+  source: NodeJS.ProcessEnv | Record<string, unknown>,
+): OracleEnv {
+  const result = OracleEnvSchema.safeParse(withoutEmptyValues(source));
+  if (!result.success) {
+    throw new Error(formatEnvError(result.error));
+  }
+  return result.data;
+}
+
+export function rpcUrl(env: NetworkEnv): string {
   if (env.NEAR_RPC_URL) {
     return env.NEAR_RPC_URL;
   }
@@ -122,6 +155,26 @@ export function summarizeEnv(env: Env): string {
     `DAO_INITIAL_BALANCE_NEAR=${env.DAO_INITIAL_BALANCE_NEAR}`,
     `BOUNTYBOARD_INITIAL_BALANCE_NEAR=${env.BOUNTYBOARD_INITIAL_BALANCE_NEAR}`,
   ].join("\n");
+}
+
+export function loadOracleEnv(
+  options: { silent?: boolean } = {},
+): OracleEnv {
+  const env = parseOracleEnv(process.env);
+  if (!options.silent) {
+    console.log(
+      [
+        `NEAR_NETWORK=${env.NEAR_NETWORK}`,
+        `NEAR_RPC_URL=${rpcUrl(env)}`,
+        `BOUNTYBOARD_CONTRACT_ID=${env.BOUNTYBOARD_CONTRACT_ID}`,
+        `NEAR_ORACLE_ACCOUNT=${env.NEAR_ORACLE_ACCOUNT}`,
+        `NEAR_ORACLE_PRIVATE_KEY=${maskSecret(env.NEAR_ORACLE_PRIVATE_KEY)}`,
+        `PR_NUMBER=${env.PR_NUMBER}`,
+        `PR_AUTHOR=${env.PR_AUTHOR}`,
+      ].join("\n"),
+    );
+  }
+  return env;
 }
 
 export function loadEnv(options: { silent?: boolean } = {}): Env {

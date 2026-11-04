@@ -7,13 +7,13 @@ import {
   type SerializedReturnValue,
 } from "near-api-js";
 
-import { rpcUrl, type Env } from "./env";
+import { rpcUrl, type NetworkEnv } from "./env";
 
 export const TGAS = 1_000_000_000_000n;
 export const DEFAULT_GAS = 30n * TGAS;
 export const DEPLOY_GAS = 200n * TGAS;
 
-export function rpcProvider(env: Env): JsonRpcProvider {
+export function rpcProvider(env: NetworkEnv): JsonRpcProvider {
   return new JsonRpcProvider({ url: rpcUrl(env) });
 }
 
@@ -26,26 +26,24 @@ export async function publicKeyFromSecret(secret: string): Promise<PublicKey> {
 }
 
 export function signingAccount(
-  env: Env,
+  env: NetworkEnv,
   accountId: string,
   secret: string,
 ): Account {
   return new Account(accountId, rpcProvider(env), signerFromSecret(secret));
 }
 
-export function readOnlyAccount(env: Env, accountId: string): Account {
+export function readOnlyAccount(env: NetworkEnv, accountId: string): Account {
   return new Account(accountId, rpcProvider(env));
 }
 
-export async function view<
-  T extends SerializedReturnValue = SerializedReturnValue,
->(
-  env: Env,
+export async function view<T = SerializedReturnValue>(
+  env: NetworkEnv,
   contractId: string,
   method: string,
   args: Record<string, unknown> = {},
 ): Promise<T> {
-  const result = await rpcProvider(env).callFunction<T>({
+  const result = await rpcProvider(env).callFunction({
     contractId,
     method,
     args,
@@ -54,7 +52,7 @@ export async function view<
 }
 
 export async function call<T extends SerializedReturnValue = SerializedReturnValue>(
-  env: Env,
+  env: NetworkEnv,
   senderAccountId: string,
   senderSecret: string,
   contractId: string,
@@ -73,7 +71,7 @@ export async function call<T extends SerializedReturnValue = SerializedReturnVal
 }
 
 export async function callRaw(
-  env: Env,
+  env: NetworkEnv,
   senderAccountId: string,
   senderSecret: string,
   contractId: string,
@@ -92,7 +90,7 @@ export async function callRaw(
 }
 
 export async function accountExists(
-  env: Env,
+  env: NetworkEnv,
   accountId: string,
 ): Promise<boolean> {
   try {
@@ -106,13 +104,13 @@ export async function accountExists(
   }
 }
 
-export async function getBalance(env: Env, accountId: string): Promise<bigint> {
+export async function getBalance(env: NetworkEnv, accountId: string): Promise<bigint> {
   const state = await rpcProvider(env).viewAccount({ accountId });
   return state.amount;
 }
 
 export async function hasContractCode(
-  env: Env,
+  env: NetworkEnv,
   contractId: string,
 ): Promise<boolean> {
   try {
@@ -143,7 +141,7 @@ export function isMissingContractCodeError(error: unknown): boolean {
 }
 
 export async function createSubaccount(
-  env: Env,
+  env: NetworkEnv,
   parentAccountId: string,
   parentSecret: string,
   newAccountId: string,
@@ -159,13 +157,21 @@ export async function createSubaccount(
 }
 
 export async function deployContract(
-  env: Env,
+  env: NetworkEnv,
   accountId: string,
   secret: string,
   wasm: Uint8Array,
 ) {
   const account = signingAccount(env, accountId, secret);
   return account.deployContract(wasm);
+}
+
+export function explorerTxUrl(network: string, hash: string): string {
+  const base =
+    network === "mainnet"
+      ? "https://nearblocks.io/txns/"
+      : "https://testnet.nearblocks.io/txns/";
+  return `${base}${hash}`;
 }
 
 export function isAccountMissingError(error: unknown): boolean {

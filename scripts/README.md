@@ -120,6 +120,63 @@ BountyBoard account may only add the `AddMemberToRole` proposal; it cannot vote
 on it or remove council members. The council `call` lane and S0 `AddBounty`
 proposals use the full-council `[1,1]` threshold.
 
+## GitHub identity and merge oracle
+
+The oracle links GitHub handles without a hosted OAuth flow. Ownership is
+confirmed out-of-band for the hackathon; the CLI requires `--confirm` before it
+broadcasts and treats `--dry-run` as a no-op. If `GITHUB_TOKEN` is set, the
+script verifies that the handle exists through the GitHub API.
+
+```bash
+npm run oracle:link-identity -- alice alice.testnet --dry-run
+npm run oracle:link-identity -- alice alice.testnet --confirm
+```
+
+The merge Action runs on closed, merged pull requests with `pull_request` (not
+`pull_request_target`). It parses `Fixes/Closes/Resolves #N` from the PR body,
+resolves the issue id, and calls `mark_merged`. Required repository secrets are
+`BOUNTYBOARD_CONTRACT_ID`, `NEAR_ORACLE_ACCOUNT`, and
+`NEAR_ORACLE_PRIVATE_KEY`; the optional repository variable `NEAR_NETWORK`
+defaults to `testnet`. Fork PRs do not receive secrets, so a maintainer must run
+`workflow_dispatch` from a trusted branch with the same values.
+
+Create the scoped Action key with `scripts/create-oracle-key.sh`. It prints,
+but does not run, the `near-cli-rs` command for exactly `mark_merged` and
+`mark_security_fixed`:
+
+```bash
+near account add-key bountyboard.testnet grant-function-call-access \
+  --allowance '1 NEAR' \
+  --contract-account-id bountyboard.bountyboard.testnet \
+  --function-names 'mark_merged, mark_security_fixed' \
+  use-manually-provided-public-key ed25519:<ORACLE_PUBLIC_KEY> \
+  network-config testnet \
+  sign-with-keychain send
+```
+
+Use a separate key for the identity backend because this scoped key cannot call
+`link_identity` or `unlink_identity`. The advisory workflow reuses the scoped
+`mark_merged` / `mark_security_fixed` key. Set `SECURITY_ADVISORY_EVENT_PATH` for
+that workflow rather than committing advisory payloads.
+
+## Testnet oracle check
+
+After deployment, run this once with a test handle and a public approved bounty:
+
+```bash
+npm run oracle:link-identity -- test-handle researcher.testnet --confirm
+
+PR_NUMBER=42 PR_BODY='Fixes #7' PR_AUTHOR=test-handle \
+PR_MERGE_COMMIT=<merge-sha> npm run oracle:mark-merged
+
+near contract call-function as-read-only "$BOUNTYBOARD_CONTRACT_ID" get_issue \
+  json-args '{"issue_id":1}' network-config testnet now
+```
+
+Expected: `status` is `Merged` and `merge_proof.source` is `Oracle`. Record the
+two transaction hashes in `deployments/testnet.json`; do not record keys or
+advisory data.
+
 ## Other commands
 
 - `npm run dao:fetch` downloads and verifies the pinned Sputnik wasm only.

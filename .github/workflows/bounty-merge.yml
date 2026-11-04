@@ -1,0 +1,57 @@
+name: Bounty merge
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number
+        required: true
+        type: number
+      pr_body:
+        description: Pull request body
+        required: true
+        type: string
+      pr_author:
+        description: Pull request author login
+        required: true
+        type: string
+      merge_commit:
+        description: Merge commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  mark-merged:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Explain fork limitation
+        if: github.event.pull_request.head.repo.fork == true
+        run: |
+          echo "::error::Fork pull requests do not receive repository secrets. Run this workflow from a maintainer branch with workflow_dispatch."
+          exit 1
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Mark merged
+        run: npx tsx scripts/oracle/mark-merged.ts
+        env:
+          NEAR_NETWORK: ${{ vars.NEAR_NETWORK || 'testnet' }}
+          BOUNTYBOARD_CONTRACT_ID: ${{ secrets.BOUNTYBOARD_CONTRACT_ID }}
+          NEAR_ORACLE_ACCOUNT: ${{ secrets.NEAR_ORACLE_ACCOUNT }}
+          NEAR_ORACLE_PRIVATE_KEY: ${{ secrets.NEAR_ORACLE_PRIVATE_KEY }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          PR_BODY: ${{ github.event.pull_request.body || inputs.pr_body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login || inputs.pr_author }}
+          PR_MERGE_COMMIT: ${{ github.event.pull_request.merge_commit_sha || inputs.merge_commit }}

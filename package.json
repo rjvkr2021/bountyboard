@@ -12,7 +12,10 @@
     "contract:deploy": "tsx scripts/deploy-bountyboard.ts",
     "verify:policy": "tsx scripts/verify-policy.ts",
     "reserve:fund": "tsx scripts/fund-reserve.ts",
-    "check:env": "tsx scripts/check-env.ts"
+    "check:env": "tsx scripts/check-env.ts",
+    "oracle:mark-merged": "tsx scripts/oracle/mark-merged.ts",
+    "oracle:link-identity": "tsx scripts/link-identity.ts",
+    "oracle:key-command": "bash scripts/create-oracle-key.sh"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

@@ -26,9 +26,9 @@ use crate::types::{
     CANDIDATE_POINTS, Candidate, CompletionKind, CouncilRequest, CouncilRequestView, DAY_SECS,
     DEFAULT_DAILY_CAP_YOCTO, DaoParams, GAS_FOR_PAYOUT, GAS_FOR_PAYOUT_CALLBACK,
     GAS_FOR_PAYOUT_TRANSFER_CALLBACK, Issue, IssueId, IssueKind, IssueStatus, MAX_CLAIMANTS,
-    MaintainerRecord, PayoutId, PayoutProof, PayoutRecord, PayoutStatus, PendingPayout, PrivateRef,
-    REPO_ID, Repo, RepoId, Reputation, S0_BOUNTY_MAX_DEADLINE, S0_BOUNTY_TIMES, S0State,
-    S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
+    MaintainerRecord, MergeSource, PayoutId, PayoutProof, PayoutRecord, PayoutStatus,
+    PendingPayout, PrivateRef, REPO_ID, Repo, RepoId, Reputation, S0_BOUNTY_MAX_DEADLINE,
+    S0_BOUNTY_TIMES, S0State, S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
 };
 
 #[near_sdk::ext_contract(ext_self)]
@@ -731,7 +731,7 @@ impl BountyBoard {
         if let Some(proof) = &issue.merge_proof
             && self
                 .identities
-                .get(&proof.pr_author)
+                .get(&proof.pr_author_handle)
                 .is_some_and(|account| account == maintainer)
         {
             return true;
@@ -1305,7 +1305,7 @@ impl BountyBoard {
                     .as_ref()
                     .ok_or(ContractError::InvalidState)?;
                 self.identities
-                    .get(&proof.pr_author)
+                    .get(&proof.pr_author_handle)
                     .cloned()
                     .ok_or(ContractError::IdentityNotLinked)
             }
@@ -2214,6 +2214,149 @@ impl BountyBoard {
         )
     }
 
+    #[handle_result]
+    pub fn link_identity(
+        &mut self,
+        github_handle: String,
+        near_account: AccountId,
+    ) -> Result<(), ContractError> {
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_oracle(repo)?;
+        let handle = normalize_handle(&github_handle)?;
+
+        if let Some(existing) = self.identities.get(&handle)
+            && existing != &near_account
+        {
+            return Err(ContractError::IdentityAlreadyLinked);
+        }
+        if let Some(existing) = self.account_identities.get(&near_account)
+            && existing != &handle
+        {
+            return Err(ContractError::IdentityAlreadyLinked);
+        }
+
+        self.identities.insert(handle.clone(), near_account.clone());
+        self.account_identities
+            .insert(near_account.clone(), handle.clone());
+        events::identity_linked(handle, near_account);
+        Ok(())
+    }
+
+    #[handle_result]
+    pub fn unlink_identity(&mut self, github_handle: String) -> Result<(), ContractError> {
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_oracle(repo)?;
+        let handle = normalize_handle(&github_handle)?;
+        let account = self
+            .identities
+            .get(&handle)
+            .cloned()
+            .ok_or(ContractError::IdentityNotLinked)?;
+        self.identities.remove(&handle);
+        self.account_identities.remove(&account);
+        events::identity_unlinked(handle, account);
+        Ok(())
+    }
+
+    pub fn get_identity(&self, github_handle: String) -> Option<AccountId> {
+        let handle = normalize_handle(&github_handle).ok()?;
+        self.identities.get(&handle).cloned()
+    }
+
+    pub fn get_identity_by_account(&self, near_account: AccountId) -> Option<String> {
+        self.account_identities.get(&near_account).cloned()
+    }
+
+    #[handle_result]
+    pub fn mark_merged(
+        &mut self,
+        issue_id: IssueId,
+        pr_number: u64,
+        pr_author_handle: String,
+        commit: String,
+    ) -> Result<(), ContractError> {
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_oracle(repo)?;
+        self.apply_merge(
+            issue_id,
+            pr_number,
+            pr_author_handle,
+            commit,
+            MergeSource::Oracle,
+        )
+    }
+
+    #[handle_result]
+    pub fn mark_merged_manual(
+        &mut self,
+        issue_id: IssueId,
+        pr_number: u64,
+        pr_author_handle: String,
+        commit: String,
+    ) -> Result<(), ContractError> {
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_maintainer(repo, &env::predecessor_account_id())?;
+        self.apply_merge(
+            issue_id,
+            pr_number,
+            pr_author_handle,
+            commit,
+            MergeSource::Manual,
+        )
+    }
+
+    fn apply_merge(
+        &mut self,
+        issue_id: IssueId,
+        pr_number: u64,
+        pr_author_handle: String,
+        commit: String,
+        source: MergeSource,
+    ) -> Result<(), ContractError> {
+        let handle = normalize_handle(&pr_author_handle)?;
+        let pr_author_account = self.identities.get(&handle).cloned();
+        let issue = self
+            .issues
+            .get_mut(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?;
+        if issue.kind != IssueKind::PublicIssue {
+            return Err(ContractError::WrongIssueKind);
+        }
+        if issue.status != IssueStatus::Approved || issue.merge_proof.is_some() {
+            return Err(ContractError::InvalidState);
+        }
+        issue.merge_proof = Some(crate::types::MergeProof {
+            pr_number,
+            pr_author_handle: handle.clone(),
+            pr_author_account: pr_author_account.clone(),
+            commit: commit.clone(),
+            source,
+            at: env::block_timestamp(),
+        });
+        issue.status = IssueStatus::Merged;
+        events::bounty_merged(
+            issue_id,
+            pr_number,
+            handle,
+            pr_author_account,
+            commit,
+            source,
+        );
+        Ok(())
+    }
+
     pub fn get_issue(&self, issue_id: IssueId) -> Option<Issue> {
         self.issues.get(&issue_id).cloned()
     }
@@ -2223,6 +2366,10 @@ impl BountyBoard {
             .get(&(REPO_ID, issue_number))
             .and_then(|issue_id| self.issues.get(issue_id))
             .cloned()
+    }
+
+    pub fn get_issue_id_by_number(&self, issue_number: u64) -> Option<IssueId> {
+        self.issue_by_number.get(&(REPO_ID, issue_number)).copied()
     }
 
     pub fn get_issue_by_private_ref(&self, private_ref: String) -> Option<Issue> {
@@ -2278,6 +2425,25 @@ fn approved_status(issue: &Issue) -> IssueStatus {
     } else {
         IssueStatus::Approved
     }
+}
+
+fn normalize_handle(raw: &str) -> Result<String, ContractError> {
+    let handle = raw
+        .trim()
+        .strip_prefix('@')
+        .unwrap_or(raw.trim())
+        .to_ascii_lowercase();
+    if handle.is_empty()
+        || handle.len() > 39
+        || handle.starts_with('-')
+        || handle.ends_with('-')
+        || !handle
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err(ContractError::InvalidHandle);
+    }
+    Ok(handle)
 }
 
 fn paginate<T>(items: impl Iterator<Item = T>, from: u32, limit: u32) -> Vec<T> {
@@ -2687,6 +2853,8 @@ mod tests {
         assert_eq!(contract.get_issue_by_number(7), Some(public));
         assert_eq!(contract.get_issue_by_number(8), None);
         assert_eq!(contract.get_issue_by_number(9), None);
+        assert_eq!(contract.get_issue_id_by_number(7), Some(1));
+        assert_eq!(contract.get_issue_id_by_number(8), None);
     }
 
     #[test]
@@ -2979,10 +3147,11 @@ mod tests {
         let mut public = sample_issue(IssueKind::PublicIssue, 1);
         public.merge_proof = Some(crate::types::MergeProof {
             pr_number: 5,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc".to_string(),
             source: crate::types::MergeSource::Manual,
-            merged_at: 1,
+            pr_author_account: None,
+            at: 1,
         });
         contract.issues.insert(1, public);
         set_predecessor(accounts(3));
@@ -3007,10 +3176,11 @@ mod tests {
         let mut issue = sample_issue(IssueKind::PublicIssue, 1);
         issue.merge_proof = Some(crate::types::MergeProof {
             pr_number: 5,
-            pr_author: "bob".to_string(),
+            pr_author_handle: "bob".to_string(),
             commit: "abc".to_string(),
             source: crate::types::MergeSource::Oracle,
-            merged_at: 1,
+            pr_author_account: None,
+            at: 1,
         });
         contract.issues.insert(1, issue);
         set_predecessor(accounts(3));
@@ -3160,10 +3330,11 @@ mod tests {
         issue.status = IssueStatus::Escalated;
         issue.merge_proof = Some(crate::types::MergeProof {
             pr_number: 5,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc".to_string(),
             source: crate::types::MergeSource::Manual,
-            merged_at: 1,
+            pr_author_account: None,
+            at: 1,
         });
         contract.issues.insert(1, issue);
         set_predecessor(accounts(0));
@@ -3575,10 +3746,11 @@ mod tests {
         issue.status = IssueStatus::Merged;
         issue.merge_proof = Some(MergeProof {
             pr_number: 1,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
         contract.issues.insert(issue_id, issue);
@@ -3598,10 +3770,11 @@ mod tests {
         issue.status = IssueStatus::Merged;
         issue.merge_proof = Some(MergeProof {
             pr_number: 11,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc123".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
         contract.issues.insert(issue_id, issue);
@@ -3634,10 +3807,11 @@ mod tests {
         issue.status = IssueStatus::Merged;
         issue.merge_proof = Some(MergeProof {
             pr_number: 11,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc123".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
         contract.issues.insert(issue_id, issue);
@@ -3676,10 +3850,11 @@ mod tests {
         issue.status = IssueStatus::Merged;
         issue.merge_proof = Some(MergeProof {
             pr_number: 11,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc123".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
         contract.issues.insert(issue_id, issue);
@@ -3712,10 +3887,11 @@ mod tests {
         issue.status = IssueStatus::PayoutPending;
         issue.merge_proof = Some(MergeProof {
             pr_number: 11,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc123".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue.s0 = Some(S0State {
             proposal_id: Some(3),
@@ -4506,6 +4682,203 @@ mod tests {
         assert_eq!(maintainers.get(&accounts(1)).unwrap().bounties_approved, 1);
     }
 
+    #[test]
+    fn normalize_handle_trims_lowercases_and_validates() {
+        assert_eq!(
+            normalize_handle("  @Alice-123 "),
+            Ok("alice-123".to_string())
+        );
+        assert_eq!(normalize_handle("Bob"), Ok("bob".to_string()));
+        let max_handle = "a".repeat(39);
+        let too_long = "a".repeat(40);
+        assert_eq!(normalize_handle(max_handle.as_str()), Ok(max_handle));
+        for invalid in [
+            "",
+            " ",
+            "@",
+            "-alice",
+            "alice-",
+            "alice_bob",
+            "alice bob",
+            "alice/bob",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                normalize_handle(invalid),
+                Err(ContractError::InvalidHandle),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn link_identity_is_oracle_only_and_enforces_uniqueness() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+
+        set_predecessor(accounts(3));
+        assert_eq!(
+            contract.link_identity("Alice".to_string(), accounts(3)),
+            Err(ContractError::NotOracle)
+        );
+
+        set_predecessor(accounts(2));
+        assert_eq!(
+            contract.link_identity("@Alice".to_string(), accounts(3)),
+            Ok(())
+        );
+        assert_eq!(
+            contract.get_identity("ALICE".to_string()),
+            Some(accounts(3))
+        );
+        assert_eq!(
+            contract.get_identity_by_account(accounts(3)),
+            Some("alice".to_string())
+        );
+        assert_eq!(count_event("identity_linked"), 1);
+
+        assert_eq!(
+            contract.link_identity("alice".to_string(), accounts(4)),
+            Err(ContractError::IdentityAlreadyLinked)
+        );
+        assert_eq!(
+            contract.link_identity("alice-2".to_string(), accounts(3)),
+            Err(ContractError::IdentityAlreadyLinked)
+        );
+        assert_eq!(
+            contract.link_identity("alice".to_string(), accounts(3)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn unlink_identity_removes_both_directions() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        set_predecessor(accounts(2));
+        contract
+            .link_identity("Alice".to_string(), accounts(3))
+            .unwrap();
+
+        set_predecessor(accounts(1));
+        assert_eq!(
+            contract.unlink_identity("alice".to_string()),
+            Err(ContractError::NotOracle)
+        );
+        set_predecessor(accounts(2));
+        assert_eq!(contract.unlink_identity("ALICE".to_string()), Ok(()));
+        assert_eq!(contract.get_identity("alice".to_string()), None);
+        assert_eq!(contract.get_identity_by_account(accounts(3)), None);
+        assert_eq!(count_event("identity_unlinked"), 1);
+        assert_eq!(
+            contract.unlink_identity("alice".to_string()),
+            Err(ContractError::IdentityNotLinked)
+        );
+    }
+
+    fn approved_public_issue(contract: &mut BountyBoard, issue_id: IssueId, number: u64) {
+        let mut issue = sample_issue(IssueKind::PublicIssue, number);
+        issue.status = IssueStatus::Approved;
+        contract.issues.insert(issue_id, issue);
+        contract.issue_by_number.insert((REPO_ID, number), issue_id);
+    }
+
+    #[test]
+    fn oracle_marks_merged_public_issue_and_resolves_identity_by_number() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        approved_public_issue(&mut contract, 1, 7);
+        set_predecessor(accounts(2));
+        contract
+            .link_identity("@Alice".to_string(), accounts(3))
+            .unwrap();
+
+        at_time(accounts(2), 55);
+        assert_eq!(
+            contract.mark_merged(1, 42, "ALICE".to_string(), "abc123".to_string()),
+            Ok(())
+        );
+
+        let issue = contract.get_issue_by_number(7).unwrap();
+        assert_eq!(issue.status, IssueStatus::Merged);
+        assert_eq!(
+            issue.merge_proof,
+            Some(MergeProof {
+                pr_number: 42,
+                pr_author_handle: "alice".to_string(),
+                pr_author_account: Some(accounts(3)),
+                commit: "abc123".to_string(),
+                source: MergeSource::Oracle,
+                at: 55,
+            })
+        );
+        assert_eq!(count_event("bounty_merged"), 1);
+        assert_eq!(
+            contract.mark_merged(1, 43, "alice".to_string(), "def456".to_string()),
+            Err(ContractError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn mark_merged_rejects_non_oracle_wrong_state_kind_and_unknown_issue() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        approved_public_issue(&mut contract, 1, 7);
+        contract
+            .issues
+            .insert(2, sample_issue(IssueKind::PublicIssue, 8));
+        let mut private = sample_issue(IssueKind::PrivateSecurity, 9);
+        private.status = IssueStatus::Approved;
+        contract.issues.insert(3, private);
+
+        set_predecessor(accounts(1));
+        assert_eq!(
+            contract.mark_merged(1, 42, "alice".to_string(), "abc".to_string()),
+            Err(ContractError::NotOracle)
+        );
+
+        set_predecessor(accounts(2));
+        assert_eq!(
+            contract.mark_merged(2, 42, "alice".to_string(), "abc".to_string()),
+            Err(ContractError::InvalidState)
+        );
+        assert_eq!(
+            contract.mark_merged(3, 42, "alice".to_string(), "abc".to_string()),
+            Err(ContractError::WrongIssueKind)
+        );
+        assert_eq!(
+            contract.mark_merged(99, 42, "alice".to_string(), "abc".to_string()),
+            Err(ContractError::IssueNotFound)
+        );
+        assert_eq!(
+            contract.mark_merged(1, 42, "bad handle".to_string(), "abc".to_string()),
+            Err(ContractError::InvalidHandle)
+        );
+    }
+
+    #[test]
+    fn unlinked_merge_author_is_stored_and_manual_fallback_requires_maintainer() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        approved_public_issue(&mut contract, 1, 7);
+
+        set_predecessor(accounts(4));
+        assert_eq!(
+            contract.mark_merged_manual(1, 42, "alice".to_string(), "abc".to_string()),
+            Err(ContractError::NotMaintainer)
+        );
+
+        at_time(accounts(1), 77);
+        assert_eq!(
+            contract.mark_merged_manual(1, 42, "@Alice".to_string(), "abc".to_string()),
+            Ok(())
+        );
+        let proof = contract.get_issue(1).unwrap().merge_proof.unwrap();
+        assert_eq!(proof.pr_author_handle, "alice");
+        assert_eq!(proof.pr_author_account, None);
+        assert_eq!(proof.source, MergeSource::Manual);
+        assert_eq!(proof.at, 77);
+        assert_eq!(
+            contract.mark_merged_manual(1, 43, "alice".to_string(), "def".to_string()),
+            Err(ContractError::InvalidState)
+        );
+    }
+
     fn count_event(event: &str) -> usize {
         let needle = format!("\"event\":\"{event}\"");
         get_logs()
@@ -4904,10 +5277,11 @@ mod tests {
         issue.approvals = approvals;
         issue.merge_proof = Some(MergeProof {
             pr_number: 11,
-            pr_author: "alice".to_string(),
+            pr_author_handle: "alice".to_string(),
             commit: "abc123".to_string(),
             source: MergeSource::Oracle,
-            merged_at: 0,
+            pr_author_account: None,
+            at: 0,
         });
         issue
     }

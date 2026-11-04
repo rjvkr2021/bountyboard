@@ -197,10 +197,11 @@ pub struct Approval {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MergeProof {
     pub pr_number: u64,
-    pub pr_author: String,
+    pub pr_author_handle: String,
+    pub pr_author_account: Option<AccountId>,
     pub commit: String,
     pub source: MergeSource,
-    pub merged_at: Timestamp,
+    pub at: Timestamp,
 }
 
 #[near(serializers = [json, borsh])]

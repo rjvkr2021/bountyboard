@@ -44,6 +44,21 @@ Copy `.env.example` to `.env` and fill in values. Never commit `.env`.
 Secrets used by CI (names only): `NEAR_ORACLE_PRIVATE_KEY`, `DEPLOYER_PRIVATE_KEY`,
 `GITHUB_TOKEN`, `GITHUB_CLIENT_SECRET`, `NEXTAUTH_SECRET`.
 
+The merge workflow also needs `BOUNTYBOARD_CONTRACT_ID`, `NEAR_ORACLE_ACCOUNT`,
+`NEAR_ORACLE_PRIVATE_KEY`, and the optional `NEAR_NETWORK` repository variable.
+`SECURITY_ADVISORY_EVENT_PATH` names the advisory payload path for the security
+workflow. Keep an `ORACLE_PUBLIC_KEY` for the scoped key command; the scoped key
+may only call `mark_merged` and `mark_security_fixed`.
+
+```bash
+bash scripts/create-oracle-key.sh
+```
+
+Prints the `near-cli-rs` command to add the function-call key; it does not run
+it. The identity backend uses a separate key because `link_identity` and
+`unlink_identity` are outside the Action key's scope. Fork pull requests do not
+receive secrets, so maintainers use `workflow_dispatch` from a trusted branch.
+
 ## 7. Demo steps ("do X, see Y")
 
 1. Create the testnet DAO. _Expected: the founder is the only council member and maintainer._
