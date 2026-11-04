@@ -679,4 +679,51 @@ mod tests {
         contract.pause_repo(REPO_ID, false).unwrap();
         assert!(!contract.get_repo().unwrap().paused);
     }
+
+    #[test]
+    fn budget_view_computes_available_amounts() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+
+        let mut repo = sample_repo();
+        repo.budget = 100;
+        repo.committed = 0;
+        contract.repos.insert(REPO_ID, repo);
+        let budget = contract.get_budget().unwrap();
+        assert_eq!(budget.available, U128(100));
+
+        let mut repo = sample_repo();
+        repo.budget = 100;
+        repo.committed = 40;
+        contract.repos.insert(REPO_ID, repo);
+        let budget = contract.get_budget().unwrap();
+        assert_eq!(budget.budget, U128(100));
+        assert_eq!(budget.committed, U128(40));
+        assert_eq!(budget.available, U128(60));
+        assert_eq!(budget.daily_cap, U128(25));
+        assert!(!budget.paused);
+
+        let mut repo = sample_repo();
+        repo.budget = 100;
+        repo.committed = 100;
+        contract.repos.insert(REPO_ID, repo);
+        assert_eq!(contract.get_budget().unwrap().available, U128(0));
+
+        let mut repo = sample_repo();
+        repo.budget = 100;
+        repo.committed = 120;
+        contract.repos.insert(REPO_ID, repo);
+        assert_eq!(contract.get_budget().unwrap().available, U128(0));
+    }
+
+    #[test]
+    fn budget_view_reflects_pause() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let mut repo = sample_repo();
+        repo.paused = true;
+        contract.repos.insert(REPO_ID, repo);
+
+        assert!(contract.get_budget().unwrap().paused);
+    }
 }
