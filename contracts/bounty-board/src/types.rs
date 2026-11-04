@@ -305,6 +305,15 @@ pub struct DaoParams {
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BootstrapState {
+    pub active: bool,
+    pub maintainers_len: u32,
+    pub threshold: u32,
+    pub ended: bool,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetView {
     pub budget: U128,
     pub committed: U128,

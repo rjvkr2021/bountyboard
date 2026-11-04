@@ -13,9 +13,9 @@ pub mod types;
 use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
-    BoardConfig, BudgetView, Candidate, CouncilRequest, DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue,
-    IssueId, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId,
-    Reputation,
+    BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest, DEFAULT_DAILY_CAP_YOCTO,
+    DaoParams, Issue, IssueId, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo,
+    RepoId, Reputation,
 };
 
 #[near(contract_state)]
@@ -186,6 +186,27 @@ impl BountyBoard {
             .get(&REPO_ID)
             .map(|repo| repo.maintainers.clone())
             .unwrap_or_default()
+    }
+
+    pub fn get_bootstrap_state(&self) -> BootstrapState {
+        let threshold = self.bootstrap_until_maintainers;
+        match self.repos.get(&REPO_ID) {
+            Some(repo) => {
+                let maintainers_len = repo.maintainers.len() as u32;
+                BootstrapState {
+                    active: !repo.bootstrap_ended && maintainers_len < threshold,
+                    maintainers_len,
+                    threshold,
+                    ended: repo.bootstrap_ended,
+                }
+            }
+            None => BootstrapState {
+                active: false,
+                maintainers_len: 0,
+                threshold,
+                ended: false,
+            },
+        }
     }
 
     pub fn get_issues(&self, from: u32, limit: u32) -> Vec<Issue> {
@@ -725,5 +746,71 @@ mod tests {
         contract.repos.insert(REPO_ID, repo);
 
         assert!(contract.get_budget().unwrap().paused);
+    }
+
+    #[test]
+    fn bootstrap_state_without_repo_is_inactive() {
+        context();
+        let contract = BountyBoard::new(accounts(0), None);
+        let state = contract.get_bootstrap_state();
+
+        assert!(!state.active);
+        assert_eq!(state.maintainers_len, 0);
+        assert_eq!(state.threshold, 3);
+        assert!(!state.ended);
+    }
+
+    #[test]
+    fn bootstrap_state_is_active_below_threshold() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+        let state = contract.get_bootstrap_state();
+
+        assert!(state.active);
+        assert_eq!(state.maintainers_len, 1);
+        assert_eq!(state.threshold, 3);
+        assert!(!state.ended);
+    }
+
+    #[test]
+    fn bootstrap_state_uses_stored_ended_flag() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let mut repo = sample_repo();
+        repo.bootstrap_ended = true;
+        contract.repos.insert(REPO_ID, repo);
+
+        let state = contract.get_bootstrap_state();
+        assert!(!state.active);
+        assert_eq!(state.maintainers_len, 1);
+        assert!(state.ended);
+    }
+
+    #[test]
+    fn bootstrap_state_respects_configured_threshold() {
+        context();
+        let config = BoardConfig {
+            bootstrap_until_maintainers: 2,
+            ..Default::default()
+        };
+        let mut contract = BountyBoard::new(accounts(0), Some(config));
+        let mut repo = sample_repo();
+        repo.maintainers.insert(
+            accounts(4),
+            MaintainerRecord {
+                since: 0,
+                bounties_approved: 0,
+                last_council_request_at: 0,
+            },
+        );
+        repo.bootstrap_ended = true;
+        contract.repos.insert(REPO_ID, repo);
+
+        let state = contract.get_bootstrap_state();
+        assert!(!state.active);
+        assert_eq!(state.maintainers_len, 2);
+        assert_eq!(state.threshold, 2);
+        assert!(state.ended);
     }
 }
