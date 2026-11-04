@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+
+use near_sdk::json_types::U128;
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{AccountId, PanicOnDefault, near};
 
@@ -8,8 +11,8 @@ pub mod types;
 
 use crate::state::StorageKey;
 use crate::types::{
-    BoardConfig, Candidate, CouncilRequest, DaoParams, Issue, IssueId, PayoutId, PayoutRecord,
-    PrivateRef, Repo, RepoId, Reputation,
+    BoardConfig, BudgetView, Candidate, CouncilRequest, DaoParams, Issue, IssueId,
+    MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
 };
 
 #[near(contract_state)]
@@ -71,11 +74,94 @@ impl BountyBoard {
     pub fn get_dao(&self) -> AccountId {
         self.dao.clone()
     }
+
+    pub fn get_config(&self) -> BoardConfig {
+        BoardConfig {
+            bootstrap_until_maintainers: self.bootstrap_until_maintainers,
+            maintainer_challenge_secs: self.maintainer_challenge_secs,
+            council_promotion_min_tenure_secs: self.council_promotion_min_tenure_secs,
+            council_promotion_delay_secs: self.council_promotion_delay_secs,
+            council_promotion_min_approvals: self.council_promotion_min_approvals,
+            council_role_name: self.council_role_name.clone(),
+        }
+    }
+
+    pub fn get_repo(&self) -> Option<Repo> {
+        self.repos.get(&REPO_ID).cloned()
+    }
+
+    pub fn get_budget(&self) -> Option<BudgetView> {
+        self.repos.get(&REPO_ID).map(|repo| BudgetView {
+            budget: U128(repo.budget),
+            committed: U128(repo.committed),
+            available: U128(repo.budget.saturating_sub(repo.committed)),
+            daily_cap: U128(repo.daily_cap),
+            paused: repo.paused,
+        })
+    }
+
+    pub fn get_maintainers(&self) -> BTreeMap<AccountId, MaintainerRecord> {
+        self.repos
+            .get(&REPO_ID)
+            .map(|repo| repo.maintainers.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn get_issues(&self, from: u32, limit: u32) -> Vec<Issue> {
+        paginate(
+            self.issues.iter().map(|(_, issue)| issue.clone()),
+            from,
+            limit,
+        )
+    }
+
+    pub fn get_payouts(&self, from: u32, limit: u32) -> Vec<PayoutRecord> {
+        paginate(
+            self.payouts.iter().map(|(_, payout)| payout.clone()),
+            from,
+            limit,
+        )
+    }
+
+    pub fn get_candidates(&self, from: u32, limit: u32) -> Vec<Candidate> {
+        paginate(
+            self.candidates
+                .iter()
+                .map(|(_, candidate)| candidate.clone()),
+            from,
+            limit,
+        )
+    }
+
+    pub fn get_council_requests(&self, from: u32, limit: u32) -> Vec<CouncilRequest> {
+        paginate(
+            self.council_requests
+                .iter()
+                .map(|(_, request)| request.clone()),
+            from,
+            limit,
+        )
+    }
+
+    pub fn get_issue_by_private_ref(&self, private_ref: String) -> Option<Issue> {
+        self.private_refs
+            .get(&private_ref)
+            .and_then(|issue_id| self.issues.get(issue_id))
+            .cloned()
+    }
+}
+
+fn paginate<T>(items: impl Iterator<Item = T>, from: u32, limit: u32) -> Vec<T> {
+    items
+        .skip(from as usize)
+        .take(limit as usize)
+        .collect::<Vec<T>>()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{Approval, IssueKind, IssueStatus, PayoutProof, PayoutStatus, Tier};
     use near_sdk::test_utils::{VMContextBuilder, accounts};
     use near_sdk::testing_env;
 
@@ -133,5 +219,180 @@ mod tests {
         assert_eq!(contract.council_promotion_min_tenure_secs, 60);
         assert_eq!(contract.council_promotion_delay_secs, 30);
         assert_eq!(contract.council_promotion_min_approvals, 1);
+    }
+
+    fn sample_repo() -> Repo {
+        let mut maintainers = BTreeMap::new();
+        maintainers.insert(
+            accounts(1),
+            MaintainerRecord {
+                since: 10,
+                bounties_approved: 2,
+                last_council_request_at: 0,
+            },
+        );
+        Repo {
+            github_repo: "owner/repo".to_string(),
+            maintainers,
+            oracle: accounts(2),
+            budget: 100,
+            committed: 40,
+            daily_cap: 25,
+            paused: false,
+            bootstrap_ended: false,
+        }
+    }
+
+    fn sample_issue(kind: IssueKind, identifier: u64) -> Issue {
+        Issue {
+            repo_id: REPO_ID,
+            kind,
+            issue_number: if kind == IssueKind::PublicIssue {
+                Some(identifier)
+            } else {
+                None
+            },
+            private_ref: if kind == IssueKind::PrivateSecurity {
+                Some(format!("{identifier:064x}"))
+            } else {
+                None
+            },
+            tier: Tier::S2,
+            amount: 10,
+            status: IssueStatus::PendingApproval,
+            creator: accounts(0),
+            claimants: Vec::new(),
+            approvals: Vec::<Approval>::new(),
+            intended_contributor: None,
+            merge_proof: None,
+            security: None,
+            s0: None,
+            payout_id: None,
+            blocked_reason: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn empty_views_return_empty_results() {
+        context();
+        let contract = BountyBoard::new(accounts(0), None);
+
+        assert_eq!(contract.get_config(), BoardConfig::default());
+        assert_eq!(contract.get_repo(), None);
+        assert_eq!(contract.get_budget(), None);
+        assert!(contract.get_maintainers().is_empty());
+        assert!(contract.get_issues(0, 10).is_empty());
+        assert!(contract.get_payouts(0, 10).is_empty());
+        assert!(contract.get_candidates(0, 10).is_empty());
+        assert!(contract.get_council_requests(0, 10).is_empty());
+        assert_eq!(contract.get_issue_by_private_ref("a".repeat(64)), None);
+    }
+
+    #[test]
+    fn issue_views_paginate_and_look_up_private_refs() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let public = sample_issue(IssueKind::PublicIssue, 1);
+        let private = sample_issue(IssueKind::PrivateSecurity, 2);
+
+        contract.issues.insert(1, public.clone());
+        contract.issues.insert(2, private.clone());
+        contract
+            .private_refs
+            .insert(private.private_ref.clone().unwrap(), 2);
+
+        assert_eq!(contract.get_issues(0, 10).len(), 2);
+        assert_eq!(contract.get_issues(1, 1).len(), 1);
+        assert!(contract.get_issues(5, 10).is_empty());
+        assert_eq!(
+            contract.get_issue_by_private_ref(private.private_ref.clone().unwrap()),
+            Some(private)
+        );
+        assert_eq!(contract.get_issue_by_private_ref("b".repeat(64)), None);
+    }
+
+    #[test]
+    fn undisclosed_private_issue_view_is_redacted() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract
+            .issues
+            .insert(1, sample_issue(IssueKind::PrivateSecurity, 3));
+
+        let json = serde_json::to_string(&contract.get_issues(0, 10)).unwrap();
+        assert!(json.contains("private_ref"));
+        assert!(!json.contains("ghsa_id"));
+        assert!(!json.contains("advisory_url"));
+        assert!(!json.contains("researcher_github"));
+    }
+
+    #[test]
+    fn repo_views_return_repo_state() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+
+        assert_eq!(contract.get_repo(), Some(sample_repo()));
+        assert_eq!(contract.get_maintainers().len(), 1);
+        assert_eq!(
+            contract.get_budget(),
+            Some(BudgetView {
+                budget: U128(100),
+                committed: U128(40),
+                available: U128(60),
+                daily_cap: U128(25),
+                paused: false,
+            })
+        );
+    }
+
+    #[test]
+    fn remaining_list_views_paginate() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.payouts.insert(
+            1,
+            PayoutRecord {
+                issue_id: 1,
+                recipient: accounts(3),
+                amount: 10,
+                tier: Tier::S2,
+                points: 3,
+                status: PayoutStatus::Paid,
+                attempt: 1,
+                proof: PayoutProof::PullRequest {
+                    pr_number: 7,
+                    commit: "abc".to_string(),
+                },
+                created_at: 1,
+                updated_at: 2,
+            },
+        );
+        contract.candidates.insert(
+            accounts(3),
+            Candidate {
+                account: accounts(3),
+                created_at: 1,
+                challenge_until: 2,
+                vetoed: false,
+                points_at_creation: 10,
+                completed_at_creation: 3,
+            },
+        );
+        contract.council_requests.insert(
+            accounts(3),
+            CouncilRequest {
+                last_proposal_at: 1,
+                active_proposal_id: None,
+            },
+        );
+
+        assert_eq!(contract.get_payouts(0, 10).len(), 1);
+        assert_eq!(contract.get_payouts(1, 10).len(), 0);
+        assert_eq!(contract.get_candidates(0, 10).len(), 1);
+        assert_eq!(contract.get_candidates(1, 10).len(), 0);
+        assert_eq!(contract.get_council_requests(0, 10).len(), 1);
+        assert_eq!(contract.get_council_requests(1, 10).len(), 0);
     }
 }

@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
+use near_sdk::json_types::U128;
 use near_sdk::{AccountId, Timestamp, near};
 
 pub type RepoId = u64;
 pub type IssueId = u64;
 pub type PayoutId = u64;
 pub type PrivateRef = String;
+
+pub const REPO_ID: RepoId = 0;
 
 pub const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const S3_AUTO_APPROVE_MAX_YOCTO: u128 = 25 * ONE_NEAR;
@@ -298,6 +301,16 @@ pub struct DaoParams {
     pub proposal_period: u64,
     pub bounty_forgiveness_period: u64,
     pub synced_at: Timestamp,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BudgetView {
+    pub budget: U128,
+    pub committed: U128,
+    pub available: U128,
+    pub daily_cap: U128,
+    pub paused: bool,
 }
 
 #[cfg(test)]
