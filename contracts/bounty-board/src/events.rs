@@ -83,6 +83,39 @@ pub struct PayoutRequestFailed {
     pub reason: String,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutCompleted {
+    pub issue_id: IssueId,
+    pub payout_id: u64,
+    pub recipient: AccountId,
+    pub amount: U128,
+    pub tier: Tier,
+    pub points: u32,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutFailed {
+    pub issue_id: IssueId,
+    pub payout_id: u64,
+    pub recipient: AccountId,
+    pub amount: U128,
+    pub tier: Tier,
+    pub points: u32,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutRefunded {
+    pub issue_id: IssueId,
+    pub payout_id: u64,
+    pub recipient: AccountId,
+    pub amount: U128,
+    pub tier: Tier,
+    pub points: u32,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -151,6 +184,72 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             issue_id,
             maintainer,
             released: U128(released),
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn payout_completed(
+    issue_id: IssueId,
+    payout_id: u64,
+    recipient: AccountId,
+    amount: u128,
+    tier: Tier,
+    points: u32,
+) {
+    emit(
+        "payout_completed",
+        &PayoutCompleted {
+            issue_id,
+            payout_id,
+            recipient,
+            amount: U128(amount),
+            tier,
+            points,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn payout_failed(
+    issue_id: IssueId,
+    payout_id: u64,
+    recipient: AccountId,
+    amount: u128,
+    tier: Tier,
+    points: u32,
+) {
+    emit(
+        "payout_failed",
+        &PayoutFailed {
+            issue_id,
+            payout_id,
+            recipient,
+            amount: U128(amount),
+            tier,
+            points,
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn payout_refunded(
+    issue_id: IssueId,
+    payout_id: u64,
+    recipient: AccountId,
+    amount: u128,
+    tier: Tier,
+    points: u32,
+) {
+    emit(
+        "payout_refunded",
+        &PayoutRefunded {
+            issue_id,
+            payout_id,
+            recipient,
+            amount: U128(amount),
+            tier,
+            points,
         },
     );
 }
@@ -387,5 +486,61 @@ mod tests {
         assert_eq!(value["event"], "payout_request_failed");
         assert_eq!(value["data"]["issue_id"], 3);
         assert_eq!(value["data"]["reason"], "payout proposal expired");
+    }
+    #[test]
+    fn payout_completed_event_shape() {
+        let log = event_json(
+            "payout_completed",
+            &PayoutCompleted {
+                issue_id: 3,
+                payout_id: 5,
+                recipient: accounts(4),
+                amount: U128(10),
+                tier: Tier::S2,
+                points: 3,
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "payout_completed");
+        assert_eq!(value["data"]["issue_id"], 3);
+        assert_eq!(value["data"]["payout_id"], 5);
+        assert_eq!(value["data"]["recipient"], accounts(4).to_string());
+        assert_eq!(value["data"]["amount"], "10");
+        assert_eq!(value["data"]["tier"], "S2");
+        assert_eq!(value["data"]["points"], 3);
+    }
+
+    #[test]
+    fn payout_failed_and_refunded_event_shapes() {
+        let failed = event_json(
+            "payout_failed",
+            &PayoutFailed {
+                issue_id: 3,
+                payout_id: 5,
+                recipient: accounts(4),
+                amount: U128(10),
+                tier: Tier::S2,
+                points: 3,
+            },
+        );
+        let failed_value = parse_event(&failed);
+        assert_eq!(failed_value["event"], "payout_failed");
+        assert_eq!(failed_value["data"]["payout_id"], 5);
+
+        let refunded = event_json(
+            "payout_refunded",
+            &PayoutRefunded {
+                issue_id: 3,
+                payout_id: 5,
+                recipient: accounts(4),
+                amount: U128(10),
+                tier: Tier::S2,
+                points: 3,
+            },
+        );
+        let refunded_value = parse_event(&refunded);
+        assert_eq!(refunded_value["event"], "payout_refunded");
+        assert_eq!(refunded_value["data"]["amount"], "10");
     }
 }

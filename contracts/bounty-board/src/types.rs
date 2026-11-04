@@ -24,6 +24,9 @@ pub const DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS: u32 = 3;
 pub const DEFAULT_COUNCIL_ROLE_NAME: &str = "council";
 pub const GAS_FOR_PAYOUT: u64 = 30_000_000_000_000;
 pub const GAS_FOR_PAYOUT_CALLBACK: u64 = 20_000_000_000_000;
+pub const GAS_FOR_PAYOUT_TRANSFER_CALLBACK: u64 = 20_000_000_000_000;
+pub const CANDIDATE_POINTS: u32 = 10;
+pub const CANDIDATE_COMPLETED: u64 = 3;
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
