@@ -602,6 +602,10 @@ impl BountyBoard {
         )
     }
 
+    pub fn get_issue(&self, issue_id: IssueId) -> Option<Issue> {
+        self.issues.get(&issue_id).cloned()
+    }
+
     pub fn get_issue_by_number(&self, issue_number: u64) -> Option<Issue> {
         self.issue_by_number
             .get(&(REPO_ID, issue_number))
@@ -1560,6 +1564,56 @@ mod tests {
         assert_eq!(contract.mark_spam(3), Err(ContractError::InvalidState));
         set_predecessor(accounts(5));
         assert_eq!(contract.mark_spam(2), Err(ContractError::NotMaintainer));
+    }
+
+    #[test]
+    fn get_issue_returns_the_full_issue_shape() {
+        let mut contract = three_maintainer_contract();
+        set_predecessor(accounts(1));
+        let issue_id = contract
+            .create_bounty(7, Tier::S2, U128(ONE_NEAR), Some(accounts(3)))
+            .unwrap();
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue, contract.get_issues(0, 10)[0]);
+        let json = serde_json::to_value(&issue).unwrap();
+        for field in [
+            "repo_id",
+            "kind",
+            "issue_number",
+            "tier",
+            "amount",
+            "status",
+            "creator",
+            "claimants",
+            "approvals",
+            "intended_contributor",
+            "merge_proof",
+            "security",
+            "s0",
+            "payout_id",
+            "blocked_reason",
+            "cancelled_by",
+            "created_at",
+        ] {
+            assert!(json.get(field).is_some(), "missing {field}");
+        }
+        assert!(json.get("private_ref").is_some());
+        assert_eq!(contract.get_issue(99), None);
+    }
+
+    #[test]
+    fn get_issue_redacts_undisclosed_private_security_fields() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract
+            .issues
+            .insert(1, sample_issue(IssueKind::PrivateSecurity, 3));
+
+        let json = serde_json::to_string(&contract.get_issue(1).unwrap()).unwrap();
+        assert!(json.contains("private_ref"));
+        assert!(!json.contains("ghsa_id"));
+        assert!(!json.contains("advisory_url"));
+        assert!(!json.contains("researcher_github"));
     }
 
     #[test]

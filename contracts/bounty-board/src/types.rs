@@ -8,6 +8,25 @@ pub type IssueId = u64;
 pub type PayoutId = u64;
 pub type PrivateRef = String;
 
+pub(crate) mod json_u128 {
+    use near_sdk::json_types::U128;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(U128::deserialize(deserializer)?.0)
+    }
+}
+
 pub const REPO_ID: RepoId = 0;
 
 pub const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
@@ -169,8 +188,11 @@ pub struct Repo {
     pub github_repo: String,
     pub maintainers: BTreeMap<AccountId, MaintainerRecord>,
     pub oracle: AccountId,
+    #[serde(with = "json_u128")]
     pub budget: u128,
+    #[serde(with = "json_u128")]
     pub committed: u128,
+    #[serde(with = "json_u128")]
     pub daily_cap: u128,
     pub paused: bool,
     pub bootstrap_ended: bool,
@@ -219,6 +241,7 @@ pub struct Issue {
     pub issue_number: Option<u64>,
     pub private_ref: Option<PrivateRef>,
     pub tier: Tier,
+    #[serde(with = "json_u128")]
     pub amount: u128,
     pub status: IssueStatus,
     pub creator: AccountId,
@@ -258,6 +281,7 @@ pub enum PayoutProof {
 pub struct PayoutRecord {
     pub issue_id: IssueId,
     pub recipient: AccountId,
+    #[serde(with = "json_u128")]
     pub amount: u128,
     pub tier: Tier,
     pub points: u32,
@@ -272,6 +296,7 @@ pub struct PayoutRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reputation {
     pub completed: u64,
+    #[serde(with = "json_u128")]
     pub total_earned: u128,
     pub points: u32,
     pub has_s1_or_s0: bool,
@@ -299,7 +324,9 @@ pub struct CouncilRequest {
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DaoParams {
+    #[serde(with = "json_u128")]
     pub proposal_bond: u128,
+    #[serde(with = "json_u128")]
     pub bounty_bond: u128,
     pub proposal_period: u64,
     pub bounty_forgiveness_period: u64,
