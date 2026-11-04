@@ -275,6 +275,9 @@ dependencies = [
  "near-api",
  "near-sandbox",
  "near-sdk",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "testresult",
  "tokio",
 ]
