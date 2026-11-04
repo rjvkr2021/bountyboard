@@ -137,6 +137,19 @@ impl BountyBoard {
         Ok(())
     }
 
+    #[handle_result]
+    pub fn pause_repo(&mut self, repo_id: RepoId, paused: bool) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+
+        let repo = self
+            .repos
+            .get_mut(&repo_id)
+            .ok_or(ContractError::RepoNotFound)?;
+        repo.paused = paused;
+
+        Ok(())
+    }
+
     pub fn get_config(&self) -> BoardConfig {
         BoardConfig {
             bootstrap_until_maintainers: self.bootstrap_until_maintainers,
@@ -612,5 +625,52 @@ mod tests {
         contract.set_budget(REPO_ID, U128(40)).unwrap();
         assert_eq!(contract.get_repo().unwrap().budget, 40);
         assert_eq!(contract.get_budget().unwrap().available, U128(0));
+    }
+
+    #[test]
+    fn pause_repo_requires_dao() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+        set_predecessor(accounts(1));
+
+        assert_eq!(
+            contract.pause_repo(REPO_ID, true),
+            Err(ContractError::NotDao)
+        );
+    }
+
+    #[test]
+    fn pause_repo_requires_existing_repo() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        set_predecessor(accounts(0));
+
+        assert_eq!(
+            contract.pause_repo(REPO_ID, true),
+            Err(ContractError::RepoNotFound)
+        );
+    }
+
+    #[test]
+    fn pause_repo_only_changes_the_paused_flag() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+        set_predecessor(accounts(0));
+
+        let before = contract.get_repo().unwrap();
+        contract.pause_repo(REPO_ID, true).unwrap();
+        let paused = contract.get_repo().unwrap();
+
+        assert!(paused.paused);
+        assert_eq!(paused.budget, before.budget);
+        assert_eq!(paused.committed, before.committed);
+        assert_eq!(paused.daily_cap, before.daily_cap);
+        assert_eq!(paused.maintainers, before.maintainers);
+        assert_eq!(paused.oracle, before.oracle);
+
+        contract.pause_repo(REPO_ID, false).unwrap();
+        assert!(!contract.get_repo().unwrap().paused);
     }
 }
