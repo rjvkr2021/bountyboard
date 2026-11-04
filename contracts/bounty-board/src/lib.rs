@@ -14,9 +14,10 @@ pub mod validation;
 use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
-    BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest, DAY_SECS,
-    DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue, IssueId, IssueKind, IssueStatus, MaintainerRecord,
-    PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation, Tier,
+    Approval, ApprovalSource, BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest,
+    DAY_SECS, DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue, IssueId, IssueKind, IssueStatus,
+    MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
+    S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
 };
 
 #[near(contract_state)]
@@ -111,6 +112,29 @@ impl BountyBoard {
             validation::assert_daily_cap(repo, spent, amount.0)?;
         }
 
+        let auto_s3 = tier.is_s3()
+            && amount.0 <= S3_AUTO_APPROVE_MAX_YOCTO
+            && contributor.as_ref().is_some_and(|account| {
+                account != &creator
+                    && self
+                        .reputation
+                        .get(account)
+                        .is_some_and(|record| record.completed >= S3_AUTO_MIN_COMPLETED)
+            });
+        let (status, approvals) = if auto_s3 {
+            let account = contributor.clone().expect("contributor checked");
+            (
+                IssueStatus::Approved,
+                vec![Approval {
+                    approver: account,
+                    source: ApprovalSource::AutoS3,
+                    at: now,
+                }],
+            )
+        } else {
+            (IssueStatus::PendingApproval, Vec::new())
+        };
+
         let issue_id = self.next_issue_id;
         self.next_issue_id += 1;
         let issue = Issue {
@@ -120,10 +144,10 @@ impl BountyBoard {
             private_ref: None,
             tier,
             amount: amount.0,
-            status: IssueStatus::PendingApproval,
+            status,
             creator: creator.clone(),
             claimants: Vec::new(),
-            approvals: Vec::new(),
+            approvals,
             intended_contributor: contributor.clone(),
             merge_proof: None,
             security: None,
@@ -158,7 +182,7 @@ impl BountyBoard {
             amount.0,
             creator,
             contributor,
-            IssueStatus::PendingApproval,
+            status,
         );
 
         Ok(issue_id)
@@ -508,6 +532,93 @@ mod tests {
             },
         );
         contract
+    }
+
+    fn set_completed(contract: &mut BountyBoard, account: AccountId, completed: u64) {
+        contract.reputation.insert(
+            account,
+            Reputation {
+                completed,
+                total_earned: 0,
+                points: 0,
+                has_s1_or_s0: false,
+                payout_ids: Vec::new(),
+            },
+        );
+    }
+
+    #[test]
+    fn s3_auto_approves_trusted_intended_contributor() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        set_completed(&mut contract, accounts(3), S3_AUTO_MIN_COMPLETED);
+        set_predecessor(accounts(1));
+
+        let issue_id = contract
+            .create_bounty(7, Tier::S3, U128(10 * ONE_NEAR), Some(accounts(3)))
+            .unwrap();
+
+        let issue = contract.issues.get(&issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Approved);
+        assert_eq!(issue.intended_contributor, Some(accounts(3)));
+        assert_eq!(issue.approvals.len(), 1);
+        assert_eq!(issue.approvals[0].approver, accounts(3));
+        assert_eq!(issue.approvals[0].source, ApprovalSource::AutoS3);
+    }
+
+    #[test]
+    fn s3_requires_approval_when_auto_conditions_do_not_hold() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 200 * ONE_NEAR, 100 * ONE_NEAR);
+        set_completed(&mut contract, accounts(3), S3_AUTO_MIN_COMPLETED - 1);
+        set_completed(&mut contract, accounts(1), S3_AUTO_MIN_COMPLETED);
+        set_completed(&mut contract, accounts(4), S3_AUTO_MIN_COMPLETED);
+        set_predecessor(accounts(1));
+
+        let untrusted = contract
+            .create_bounty(1, Tier::S3, U128(10 * ONE_NEAR), Some(accounts(3)))
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&untrusted).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        let over_cap = contract
+            .create_bounty(2, Tier::S3, U128(26 * ONE_NEAR), Some(accounts(4)))
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&over_cap).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        let no_contributor = contract
+            .create_bounty(3, Tier::S3, U128(10 * ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&no_contributor).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        let self_dealing = contract
+            .create_bounty(4, Tier::S3, U128(10 * ONE_NEAR), Some(accounts(1)))
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&self_dealing).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+    }
+
+    #[test]
+    fn non_s3_never_auto_approves() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        set_completed(&mut contract, accounts(3), S3_AUTO_MIN_COMPLETED);
+        set_predecessor(accounts(1));
+
+        let issue_id = contract
+            .create_bounty(1, Tier::S2, U128(10 * ONE_NEAR), Some(accounts(3)))
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&issue_id).unwrap().status,
+            IssueStatus::PendingApproval
+        );
     }
 
     #[test]
