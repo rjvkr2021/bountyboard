@@ -96,8 +96,31 @@ export async function hasContractCode(
   env: Env,
   contractId: string,
 ): Promise<boolean> {
-  const code = await rpcProvider(env).viewContractCode({ contractId });
-  return code.code_base64.length > 0;
+  try {
+    const code = await rpcProvider(env).viewContractCode({ contractId });
+    return code.code_base64.length > 0;
+  } catch (error) {
+    if (isMissingContractCodeError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+export function isMissingContractCodeError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as {
+    message?: string;
+    type?: string;
+    cause?: unknown;
+  };
+  const text = `${candidate.message ?? ""} ${candidate.type ?? ""}`;
+  if (/ContractCodeDoesNotExist|contract code[^]*does not exist/i.test(text)) {
+    return true;
+  }
+  return candidate.cause ? isMissingContractCodeError(candidate.cause) : false;
 }
 
 export async function createSubaccount(

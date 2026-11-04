@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_GAS, TGAS, isAccountMissingError } from "./near";
+import {
+  DEFAULT_GAS,
+  TGAS,
+  isAccountMissingError,
+  isMissingContractCodeError,
+} from "./near";
 
 describe("isAccountMissingError", () => {
   it("detects RPC account errors", () => {
@@ -32,5 +37,20 @@ describe("gas constants", () => {
   it("expresses default gas in TGas", () => {
     expect(TGAS).toBe(1_000_000_000_000n);
     expect(DEFAULT_GAS).toBe(30n * TGAS);
+  });
+});
+
+describe("isMissingContractCodeError", () => {
+  it("detects an account without contract code", () => {
+    expect(
+      isMissingContractCodeError({
+        message:
+          "Contract code for contract ID bounty-dao.testnet does not exist at block height 1",
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores unrelated errors", () => {
+    expect(isMissingContractCodeError(new Error("timeout"))).toBe(false);
   });
 });
