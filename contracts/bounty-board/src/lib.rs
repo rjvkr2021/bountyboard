@@ -245,6 +245,13 @@ impl BountyBoard {
         )
     }
 
+    pub fn get_issue_by_number(&self, issue_number: u64) -> Option<Issue> {
+        self.issue_by_number
+            .get(&(REPO_ID, issue_number))
+            .and_then(|issue_id| self.issues.get(issue_id))
+            .cloned()
+    }
+
     pub fn get_issue_by_private_ref(&self, private_ref: String) -> Option<Issue> {
         self.private_refs
             .get(&private_ref)
@@ -395,6 +402,7 @@ mod tests {
         assert!(contract.get_candidates(0, 10).is_empty());
         assert!(contract.get_council_requests(0, 10).is_empty());
         assert_eq!(contract.get_issue_by_private_ref("a".repeat(64)), None);
+        assert_eq!(contract.get_issue_by_number(1), None);
     }
 
     #[test]
@@ -418,6 +426,23 @@ mod tests {
             Some(private)
         );
         assert_eq!(contract.get_issue_by_private_ref("b".repeat(64)), None);
+        assert_eq!(contract.get_issue_by_number(1), None);
+    }
+
+    #[test]
+    fn get_issue_by_number_finds_only_indexed_public_issues() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let public = sample_issue(IssueKind::PublicIssue, 7);
+        let private = sample_issue(IssueKind::PrivateSecurity, 8);
+
+        contract.issues.insert(1, public.clone());
+        contract.issues.insert(2, private.clone());
+        contract.issue_by_number.insert((REPO_ID, 7), 1);
+
+        assert_eq!(contract.get_issue_by_number(7), Some(public));
+        assert_eq!(contract.get_issue_by_number(8), None);
+        assert_eq!(contract.get_issue_by_number(9), None);
     }
 
     #[test]
