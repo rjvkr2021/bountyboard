@@ -1,7 +1,20 @@
-use near_sdk::near;
+use std::collections::BTreeMap;
+
+use near_sdk::{AccountId, Timestamp, near};
+
+pub type RepoId = u64;
+pub type IssueId = u64;
+pub type PayoutId = u64;
+pub type PrivateRef = String;
 
 pub const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const S3_AUTO_APPROVE_MAX_YOCTO: u128 = 25 * ONE_NEAR;
+pub const DEFAULT_DAILY_CAP_YOCTO: u128 = 25 * ONE_NEAR;
+pub const DAY_SECS: u64 = 86_400;
+pub const WEEK_SECS: u64 = 7 * DAY_SECS;
+pub const DEFAULT_BOOTSTRAP_UNTIL_MAINTAINERS: u32 = 3;
+pub const DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS: u32 = 3;
+pub const DEFAULT_COUNCIL_ROLE_NAME: &str = "council";
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +124,180 @@ pub enum PayoutStatus {
     Paid,
     Failed,
     Refunded,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardConfig {
+    pub bootstrap_until_maintainers: u32,
+    pub maintainer_challenge_secs: u64,
+    pub council_promotion_min_tenure_secs: u64,
+    pub council_promotion_delay_secs: u64,
+    pub council_promotion_min_approvals: u32,
+    pub council_role_name: String,
+}
+
+impl Default for BoardConfig {
+    fn default() -> Self {
+        Self {
+            bootstrap_until_maintainers: DEFAULT_BOOTSTRAP_UNTIL_MAINTAINERS,
+            maintainer_challenge_secs: WEEK_SECS,
+            council_promotion_min_tenure_secs: WEEK_SECS,
+            council_promotion_delay_secs: WEEK_SECS,
+            council_promotion_min_approvals: DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS,
+            council_role_name: DEFAULT_COUNCIL_ROLE_NAME.to_string(),
+        }
+    }
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaintainerRecord {
+    pub since: Timestamp,
+    pub bounties_approved: u64,
+    pub last_council_request_at: Timestamp,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Repo {
+    pub github_repo: String,
+    pub maintainers: BTreeMap<AccountId, MaintainerRecord>,
+    pub oracle: AccountId,
+    pub budget: u128,
+    pub committed: u128,
+    pub daily_cap: u128,
+    pub paused: bool,
+    pub bootstrap_ended: bool,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Approval {
+    pub approver: AccountId,
+    pub source: ApprovalSource,
+    pub at: Timestamp,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergeProof {
+    pub pr_number: u64,
+    pub pr_author: String,
+    pub commit: String,
+    pub source: MergeSource,
+    pub merged_at: Timestamp,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecurityDisclosure {
+    pub ghsa_id: String,
+    pub advisory_url: String,
+    pub researcher_github: String,
+    pub disclosed_at: Timestamp,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0State {
+    pub proposal_id: Option<u64>,
+    pub native_bounty_id: Option<u64>,
+    pub bounty_done_proposal_id: Option<u64>,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Issue {
+    pub repo_id: RepoId,
+    pub kind: IssueKind,
+    pub issue_number: Option<u64>,
+    pub private_ref: Option<PrivateRef>,
+    pub tier: Tier,
+    pub amount: u128,
+    pub status: IssueStatus,
+    pub creator: AccountId,
+    pub claimants: Vec<AccountId>,
+    pub approvals: Vec<Approval>,
+    pub intended_contributor: Option<AccountId>,
+    pub merge_proof: Option<MergeProof>,
+    pub security: Option<SecurityDisclosure>,
+    pub s0: Option<S0State>,
+    pub payout_id: Option<PayoutId>,
+    pub blocked_reason: Option<String>,
+    pub created_at: Timestamp,
+}
+
+impl Issue {
+    pub fn has_exactly_one_identifier(&self) -> bool {
+        self.issue_number.is_some() ^ self.private_ref.is_some()
+    }
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayoutProof {
+    PullRequest {
+        pr_number: u64,
+        commit: String,
+    },
+    AdvisoryPublication {
+        ghsa_id: String,
+        advisory_url: String,
+    },
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutRecord {
+    pub issue_id: IssueId,
+    pub recipient: AccountId,
+    pub amount: u128,
+    pub tier: Tier,
+    pub points: u32,
+    pub status: PayoutStatus,
+    pub attempt: u32,
+    pub proof: PayoutProof,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reputation {
+    pub completed: u64,
+    pub total_earned: u128,
+    pub points: u32,
+    pub has_s1_or_s0: bool,
+    pub payout_ids: Vec<PayoutId>,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub account: AccountId,
+    pub created_at: Timestamp,
+    pub challenge_until: Timestamp,
+    pub vetoed: bool,
+    pub points_at_creation: u32,
+    pub completed_at_creation: u64,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CouncilRequest {
+    pub last_proposal_at: Timestamp,
+    pub active_proposal_id: Option<u64>,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DaoParams {
+    pub proposal_bond: u128,
+    pub bounty_bond: u128,
+    pub proposal_period: u64,
+    pub bounty_forgiveness_period: u64,
+    pub synced_at: Timestamp,
 }
 
 #[cfg(test)]
@@ -270,5 +457,65 @@ mod tests {
             serde_json::to_string(&PayoutStatus::Refunded).unwrap(),
             "\"Refunded\""
         );
+    }
+
+    #[test]
+    fn board_config_defaults_are_production_values() {
+        let config = BoardConfig::default();
+        assert_eq!(
+            config.bootstrap_until_maintainers,
+            DEFAULT_BOOTSTRAP_UNTIL_MAINTAINERS
+        );
+        assert_eq!(config.maintainer_challenge_secs, WEEK_SECS);
+        assert_eq!(config.council_promotion_min_tenure_secs, WEEK_SECS);
+        assert_eq!(config.council_promotion_delay_secs, WEEK_SECS);
+        assert_eq!(
+            config.council_promotion_min_approvals,
+            DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS
+        );
+        assert_eq!(config.council_role_name, DEFAULT_COUNCIL_ROLE_NAME);
+    }
+
+    fn sample_issue(issue_number: Option<u64>, private_ref: Option<PrivateRef>) -> Issue {
+        Issue {
+            repo_id: 0,
+            kind: if issue_number.is_some() {
+                IssueKind::PublicIssue
+            } else {
+                IssueKind::PrivateSecurity
+            },
+            issue_number,
+            private_ref,
+            tier: Tier::S2,
+            amount: ONE_NEAR,
+            status: IssueStatus::PendingApproval,
+            creator: "alice.near".parse().unwrap(),
+            claimants: Vec::new(),
+            approvals: Vec::new(),
+            intended_contributor: None,
+            merge_proof: None,
+            security: None,
+            s0: None,
+            payout_id: None,
+            blocked_reason: None,
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn issue_requires_exactly_one_identifier() {
+        assert!(sample_issue(Some(7), None).has_exactly_one_identifier());
+        assert!(sample_issue(None, Some("a".repeat(64))).has_exactly_one_identifier());
+        assert!(!sample_issue(Some(7), Some("a".repeat(64))).has_exactly_one_identifier());
+        assert!(!sample_issue(None, None).has_exactly_one_identifier());
+    }
+
+    #[test]
+    fn undisclosed_issue_json_has_no_advisory_fields() {
+        let json = serde_json::to_string(&sample_issue(None, Some("a".repeat(64)))).unwrap();
+        assert!(json.contains("private_ref"));
+        assert!(!json.contains("ghsa_id"));
+        assert!(!json.contains("advisory_url"));
+        assert!(!json.contains("researcher_github"));
     }
 }
