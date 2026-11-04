@@ -993,29 +993,43 @@ impl BountyBoard {
         }
 
         let recipient = self.resolve_recipient(&issue)?;
+        let council_resolved = self.has_council_resolution(&issue);
 
-        if issue.creator == recipient
-            || issue.approvals.iter().any(|approval| {
-                approval.source == ApprovalSource::Maintainer && approval.approver == recipient
-            })
-        {
-            issue.status = IssueStatus::Escalated;
-            issue.blocked_reason = Some("final recipient conflicts with an approver".to_string());
-            let reason = issue.blocked_reason.clone().unwrap_or_default();
-            self.issues.insert(issue_id, issue);
-            events::payout_request_failed(issue_id, reason);
-            return Ok(PromiseOrValue::Value(()));
+        if !council_resolved {
+            let reason = if issue.creator == recipient {
+                Some("final recipient conflicts with an approver".to_string())
+            } else if self.payout_conflict(&issue, &recipient) {
+                Some(match issue.kind {
+                    IssueKind::PublicIssue => {
+                        "final recipient conflicts with an approver".to_string()
+                    }
+                    IssueKind::PrivateSecurity => {
+                        "a maintainer approval is conflicted or unlinked".to_string()
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                issue.status = IssueStatus::Escalated;
+                issue.blocked_reason = Some(reason.clone());
+                self.issues.insert(issue_id, issue);
+                events::payout_request_failed(issue_id, reason);
+                return Ok(PromiseOrValue::Value(()));
+            }
         }
 
         if !self.approvals_sufficient(&issue) {
             return Err(ContractError::InsufficientApprovals);
         }
 
-        if issue
-            .approvals
-            .iter()
-            .any(|approval| approval.source == ApprovalSource::AutoS3)
+        if !council_resolved
+            && issue
+                .approvals
+                .iter()
+                .any(|approval| approval.source == ApprovalSource::AutoS3)
             && issue.intended_contributor.as_ref() != Some(&recipient)
+            && self.unconflicted_approvals(&issue) < issue.tier.required_maintainer_approvals()
         {
             issue.status = IssueStatus::Escalated;
             issue.blocked_reason =
@@ -1302,6 +1316,37 @@ impl BountyBoard {
                     .get(&security.researcher_github)
                     .cloned()
                     .ok_or(ContractError::IdentityNotLinked)
+            }
+        }
+    }
+
+    fn has_council_resolution(&self, issue: &Issue) -> bool {
+        issue.approvals.iter().any(|approval| {
+            matches!(
+                approval.source,
+                ApprovalSource::Council | ApprovalSource::BootstrapCouncil
+            )
+        })
+    }
+
+    fn payout_conflict(&self, issue: &Issue, recipient: &AccountId) -> bool {
+        match issue.kind {
+            IssueKind::PublicIssue => issue.approvals.iter().any(|approval| {
+                approval.source == ApprovalSource::Maintainer
+                    && (&approval.approver == recipient
+                        || issue.claimants.contains(&approval.approver))
+            }),
+            IssueKind::PrivateSecurity => {
+                let Some(security) = issue.security.as_ref() else {
+                    return false;
+                };
+                issue.approvals.iter().any(|approval| {
+                    approval.source == ApprovalSource::Maintainer
+                        && match self.account_identities.get(&approval.approver) {
+                            Some(handle) => handle == &security.researcher_github,
+                            None => true,
+                        }
+                })
             }
         }
     }
@@ -1712,8 +1757,8 @@ impl BountyBoard {
                 challenge_until: now
                     .saturating_add(self.maintainer_challenge_secs.saturating_mul(1_000_000_000)),
                 vetoed: false,
-                points_at_creation: reputation.points,
-                completed_at_creation: reputation.completed,
+                points: reputation.points,
+                completed: reputation.completed,
             },
         );
     }
@@ -1910,6 +1955,76 @@ impl BountyBoard {
         )
     }
 
+    #[handle_result]
+    pub fn promote(&mut self, candidate: AccountId) -> Result<(), ContractError> {
+        let record = self
+            .candidates
+            .get(&candidate)
+            .cloned()
+            .ok_or(ContractError::CandidateNotFound)?;
+        if record.vetoed {
+            return Err(ContractError::CandidateVetoed);
+        }
+        let now = env::block_timestamp();
+        if now < record.challenge_until {
+            return Err(ContractError::ChallengeActive);
+        }
+
+        let threshold = self.bootstrap_until_maintainers as usize;
+        let repo = self
+            .repos
+            .get_mut(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        if repo.maintainers.contains_key(&candidate) {
+            return Err(ContractError::AlreadyMaintainer);
+        }
+        repo.maintainers.insert(
+            candidate.clone(),
+            MaintainerRecord {
+                since: now,
+                bounties_approved: 0,
+                last_council_request_at: 0,
+            },
+        );
+        if repo.maintainers.len() >= threshold {
+            repo.bootstrap_ended = true;
+        }
+
+        self.candidates.remove(&candidate);
+        events::maintainer_promoted(candidate, now);
+        Ok(())
+    }
+
+    #[handle_result]
+    pub fn veto_promotion(&mut self, candidate: AccountId) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+        let record = self
+            .candidates
+            .get_mut(&candidate)
+            .ok_or(ContractError::CandidateNotFound)?;
+        record.vetoed = true;
+        events::promotion_vetoed(candidate);
+        Ok(())
+    }
+
+    #[handle_result]
+    pub fn remove_maintainer(&mut self, account: AccountId) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+        let repo = self
+            .repos
+            .get_mut(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        if !repo.maintainers.contains_key(&account) {
+            return Err(ContractError::NotMaintainer);
+        }
+        if repo.maintainers.len() <= 1 {
+            return Err(ContractError::LastMaintainer);
+        }
+        repo.maintainers.remove(&account);
+        events::maintainer_removed(account);
+        Ok(())
+    }
+
     pub fn get_candidates(&self, from: u32, limit: u32) -> Vec<Candidate> {
         paginate(
             self.candidates
@@ -2021,6 +2136,14 @@ mod tests {
     fn set_predecessor(account: AccountId) {
         let mut builder = VMContextBuilder::new();
         builder.predecessor_account_id(account);
+        testing_env!(builder.build());
+    }
+
+    fn at_time(account: AccountId, timestamp: u64) {
+        let mut builder = VMContextBuilder::new();
+        builder
+            .predecessor_account_id(account)
+            .block_timestamp(timestamp);
         testing_env!(builder.build());
     }
 
@@ -2518,8 +2641,8 @@ mod tests {
                 created_at: 1,
                 challenge_until: 2,
                 vetoed: false,
-                points_at_creation: 10,
-                completed_at_creation: 3,
+                points: 10,
+                completed: 3,
             },
         );
         contract.council_requests.insert(
@@ -3537,6 +3660,330 @@ mod tests {
             contract.get_issue(issue_id).unwrap().claimants,
             vec![accounts(4)]
         );
+    }
+
+    fn insert_candidate(
+        contract: &mut BountyBoard,
+        account: AccountId,
+        created_at: u64,
+        challenge_until: u64,
+        vetoed: bool,
+    ) {
+        contract.candidates.insert(
+            account.clone(),
+            Candidate {
+                account,
+                created_at,
+                challenge_until,
+                vetoed,
+                points: 10,
+                completed: 3,
+            },
+        );
+    }
+
+    #[test]
+    fn candidate_views_expose_promotion_fields() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        insert_candidate(&mut contract, accounts(5), 11, 22, false);
+
+        let candidates = contract.get_candidates(0, 10);
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.account, accounts(5));
+        assert_eq!(candidate.created_at, 11);
+        assert_eq!(candidate.challenge_until, 22);
+        assert!(!candidate.vetoed);
+        assert_eq!(candidate.points, 10);
+        assert_eq!(candidate.completed, 3);
+        assert!(contract.get_candidates(1, 10).is_empty());
+    }
+
+    #[test]
+    fn promote_requires_mature_unvetoed_candidate() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        insert_candidate(&mut contract, accounts(5), 0, 100, false);
+
+        at_time(accounts(5), 99);
+        assert_eq!(
+            contract.promote(accounts(5)),
+            Err(ContractError::ChallengeActive)
+        );
+        assert_eq!(
+            contract.promote(accounts(4)),
+            Err(ContractError::CandidateNotFound)
+        );
+
+        set_predecessor(accounts(0));
+        contract.veto_promotion(accounts(5)).unwrap();
+        at_time(accounts(5), 100);
+        assert_eq!(
+            contract.promote(accounts(5)),
+            Err(ContractError::CandidateVetoed)
+        );
+    }
+
+    #[test]
+    fn promote_adds_maintainer_and_ends_bootstrap() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        insert_candidate(&mut contract, accounts(5), 0, 10, false);
+
+        at_time(accounts(5), 10);
+        contract.promote(accounts(5)).unwrap();
+        let repo = contract.get_repo().unwrap();
+        assert!(repo.maintainers.contains_key(&accounts(5)));
+        assert_eq!(repo.maintainers.get(&accounts(5)).unwrap().since, 10);
+        assert!(!repo.bootstrap_ended);
+        assert!(!contract.candidates.contains_key(&accounts(5)));
+        assert_eq!(count_event("maintainer_promoted"), 1);
+
+        insert_candidate(&mut contract, accounts(4), 0, 10, false);
+        contract.promote(accounts(4)).unwrap();
+        assert!(contract.get_repo().unwrap().bootstrap_ended);
+        assert!(contract.get_bootstrap_state().ended);
+        assert_eq!(
+            contract.promote(accounts(4)),
+            Err(ContractError::CandidateNotFound)
+        );
+
+        insert_candidate(&mut contract, accounts(1), 0, 10, false);
+        at_time(accounts(1), 10);
+        assert_eq!(
+            contract.promote(accounts(1)),
+            Err(ContractError::AlreadyMaintainer)
+        );
+    }
+
+    #[test]
+    fn veto_promotion_requires_dao_and_blocks_promotion() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        insert_candidate(&mut contract, accounts(5), 0, 10, false);
+
+        set_predecessor(accounts(1));
+        assert_eq!(
+            contract.veto_promotion(accounts(5)),
+            Err(ContractError::NotDao)
+        );
+
+        set_predecessor(accounts(0));
+        assert_eq!(
+            contract.veto_promotion(accounts(4)),
+            Err(ContractError::CandidateNotFound)
+        );
+        contract.veto_promotion(accounts(5)).unwrap();
+        assert!(contract.candidates.get(&accounts(5)).unwrap().vetoed);
+        assert_eq!(count_event("promotion_vetoed"), 1);
+
+        insert_candidate(&mut contract, accounts(4), 0, 0, false);
+        at_time(accounts(4), 0);
+        contract.promote(accounts(4)).unwrap();
+        set_predecessor(accounts(0));
+        assert!(matches!(
+            contract.veto_promotion(accounts(4)),
+            Err(ContractError::CandidateNotFound)
+        ));
+    }
+
+    #[test]
+    fn remove_maintainer_enforces_dao_last_and_bootstrap() {
+        let mut contract = contract_with_repo(vec![accounts(1), accounts(5)], 100, 25);
+        contract.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+
+        set_predecessor(accounts(1));
+        assert_eq!(
+            contract.remove_maintainer(accounts(5)),
+            Err(ContractError::NotDao)
+        );
+
+        set_predecessor(accounts(0));
+        contract.remove_maintainer(accounts(5)).unwrap();
+        assert_eq!(contract.get_maintainers().len(), 1);
+        assert!(contract.get_bootstrap_state().ended);
+        assert_eq!(
+            contract.remove_maintainer(accounts(1)),
+            Err(ContractError::LastMaintainer)
+        );
+        assert_eq!(
+            contract.remove_maintainer(accounts(4)),
+            Err(ContractError::NotMaintainer)
+        );
+        assert_eq!(count_event("maintainer_removed"), 1);
+    }
+
+    #[test]
+    fn payout_revalidates_public_approver_conflict() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(1));
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(10);
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]),
+        );
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Escalated);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("final recipient conflicts with an approver")
+        );
+
+        set_predecessor(accounts(0));
+        contract.council_approve(1).unwrap();
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Promise(_))
+        ));
+    }
+
+    #[test]
+    fn payout_revalidates_public_claimant_conflict() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(10);
+        let mut issue = merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]);
+        issue.claimants = vec![accounts(1)];
+        contract.issues.insert(1, issue);
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Escalated);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("final recipient conflicts with an approver")
+        );
+    }
+
+    #[test]
+    fn payout_revalidates_private_unlinked_and_conflicted_approver() {
+        let mut contract = contract_with_repo(vec![accounts(1), accounts(4)], 100, 25);
+        contract.identities.insert("bob".to_string(), accounts(5));
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(10);
+        let mut issue = merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]);
+        issue.kind = IssueKind::PrivateSecurity;
+        issue.issue_number = None;
+        issue.private_ref = Some("a".repeat(64));
+        issue.security = Some(SecurityDisclosure {
+            ghsa_id: "GHSA-aaaa-bbbb-cccc".to_string(),
+            advisory_url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc".to_string(),
+            researcher_github: "bob".to_string(),
+            disclosed_at: 0,
+        });
+        contract.issues.insert(1, issue);
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Escalated);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("a maintainer approval is conflicted or unlinked")
+        );
+
+        set_predecessor(accounts(0));
+        contract.council_approve(1).unwrap();
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Promise(_))
+        ));
+    }
+
+    #[test]
+    fn s3_auto_approval_requires_final_author_or_fresh_approval() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(5));
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(20);
+        let mut issue = merged_public_issue(
+            Tier::S3,
+            10,
+            vec![Approval {
+                approver: accounts(4),
+                source: ApprovalSource::AutoS3,
+                at: 0,
+            }],
+        );
+        issue.intended_contributor = Some(accounts(4));
+        contract.issues.insert(1, issue);
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        assert_eq!(
+            contract.get_issue(1).unwrap().blocked_reason.as_deref(),
+            Some("PR author does not match intended contributor")
+        );
+
+        let mut fresh = merged_public_issue(
+            Tier::S3,
+            10,
+            vec![
+                Approval {
+                    approver: accounts(4),
+                    source: ApprovalSource::AutoS3,
+                    at: 0,
+                },
+                maintainer_approval(accounts(1)),
+            ],
+        );
+        fresh.intended_contributor = Some(accounts(4));
+        contract.issues.insert(2, fresh);
+        assert!(matches!(
+            contract.request_payout(2),
+            Ok(PromiseOrValue::Promise(_))
+        ));
+    }
+
+    #[test]
+    fn bootstrap_approval_records_source_and_keeps_bootstrap_active() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 7);
+        issue.status = IssueStatus::PendingApproval;
+        issue.creator = accounts(1);
+        contract.issues.insert(1, issue);
+
+        set_predecessor(accounts(0));
+        contract.bootstrap_approve(1).unwrap();
+
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Approved);
+        assert_eq!(issue.approvals.len(), 1);
+        assert_eq!(issue.approvals[0].source, ApprovalSource::BootstrapCouncil);
+        assert!(contract.get_bootstrap_state().active);
+        assert_eq!(count_event("bounty_approved"), 1);
+    }
+
+    #[test]
+    fn budget_and_daily_cap_boundaries() {
+        let mut exact = contract_with_repo(vec![accounts(1)], 10, 100);
+        set_predecessor(accounts(1));
+        assert_eq!(exact.create_bounty(1, Tier::S2, U128(10), None), Ok(0));
+
+        let mut over = contract_with_repo(vec![accounts(1)], 10, 100);
+        set_predecessor(accounts(1));
+        assert_eq!(
+            over.create_bounty(1, Tier::S2, U128(11), None),
+            Err(ContractError::BudgetExceeded)
+        );
+
+        let day_ns = DAY_SECS * 1_000_000_000;
+        let mut cap = contract_with_repo(vec![accounts(1)], 100, 15);
+        at_time(accounts(1), day_ns - 1);
+        assert_eq!(cap.create_bounty(1, Tier::S2, U128(10), None), Ok(0));
+        assert_eq!(
+            cap.create_bounty(2, Tier::S2, U128(10), None),
+            Err(ContractError::DailyCapExceeded)
+        );
+        at_time(accounts(1), day_ns);
+        assert_eq!(cap.create_bounty(3, Tier::S2, U128(10), None), Ok(1));
     }
 
     fn count_event(event: &str) -> usize {
@@ -4599,8 +5046,8 @@ mod tests {
         contract.maybe_create_candidate(&accounts(4));
 
         let candidate = contract.candidates.get(&accounts(4)).unwrap();
-        assert_eq!(candidate.points_at_creation, 10);
-        assert_eq!(candidate.completed_at_creation, 3);
+        assert_eq!(candidate.points, 10);
+        assert_eq!(candidate.completed, 3);
         assert!(!candidate.vetoed);
         assert_eq!(
             candidate.challenge_until,

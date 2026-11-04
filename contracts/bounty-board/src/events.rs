@@ -159,6 +159,25 @@ pub struct S0VerificationFailed {
     pub reason: String,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaintainerPromoted {
+    pub account: AccountId,
+    pub since: near_sdk::Timestamp,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromotionVetoed {
+    pub account: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaintainerRemoved {
+    pub account: AccountId,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -229,6 +248,21 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             released: U128(released),
         },
     );
+}
+
+pub fn maintainer_promoted(account: AccountId, since: near_sdk::Timestamp) {
+    emit(
+        "maintainer_promoted",
+        &MaintainerPromoted { account, since },
+    );
+}
+
+pub fn promotion_vetoed(account: AccountId) {
+    emit("promotion_vetoed", &PromotionVetoed { account });
+}
+
+pub fn maintainer_removed(account: AccountId) {
+    emit("maintainer_removed", &MaintainerRemoved { account });
 }
 
 pub fn s0_proposal_created(issue_id: IssueId, proposal_id: u64) {
@@ -679,5 +713,33 @@ mod tests {
             },
         ));
         assert_eq!(voted["data"]["proposal_id"], 9);
+    }
+    #[test]
+    fn maintainer_event_shapes() {
+        let promoted = parse_event(&event_json(
+            "maintainer_promoted",
+            &MaintainerPromoted {
+                account: accounts(5),
+                since: 42,
+            },
+        ));
+        assert_eq!(promoted["data"]["account"], accounts(5).to_string());
+        assert_eq!(promoted["data"]["since"], 42);
+
+        let vetoed = parse_event(&event_json(
+            "promotion_vetoed",
+            &PromotionVetoed {
+                account: accounts(5),
+            },
+        ));
+        assert_eq!(vetoed["data"]["account"], accounts(5).to_string());
+
+        let removed = parse_event(&event_json(
+            "maintainer_removed",
+            &MaintainerRemoved {
+                account: accounts(5),
+            },
+        ));
+        assert_eq!(removed["data"]["account"], accounts(5).to_string());
     }
 }

@@ -314,8 +314,8 @@ pub struct Candidate {
     pub created_at: Timestamp,
     pub challenge_until: Timestamp,
     pub vetoed: bool,
-    pub points_at_creation: u32,
-    pub completed_at_creation: u64,
+    pub points: u32,
+    pub completed: u64,
 }
 
 #[near(serializers = [json, borsh])]
