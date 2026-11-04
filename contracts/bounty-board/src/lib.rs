@@ -15,7 +15,9 @@ pub mod types;
 pub mod validation;
 
 use crate::dao::{
-    Action, ActionCall, Policy, ProposalInput, ProposalKind, ProposalOutput, ProposalStatus,
+    Action, ActionCall, Bounty, BountyOutput, GAS_FOR_ACT_PROPOSAL, GAS_FOR_ADD_PROPOSAL,
+    GAS_FOR_GET_BOUNTY, GAS_FOR_GET_PROPOSAL, Policy, ProposalInput, ProposalKind, ProposalOutput,
+    ProposalStatus, ext_dao,
 };
 use crate::errors::ContractError;
 use crate::state::StorageKey;
@@ -25,7 +27,8 @@ use crate::types::{
     DaoParams, GAS_FOR_PAYOUT, GAS_FOR_PAYOUT_CALLBACK, GAS_FOR_PAYOUT_TRANSFER_CALLBACK, Issue,
     IssueId, IssueKind, IssueStatus, MAX_CLAIMANTS, MaintainerRecord, PayoutId, PayoutProof,
     PayoutRecord, PayoutStatus, PendingPayout, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
-    S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
+    S0_BOUNTY_MAX_DEADLINE, S0_BOUNTY_TIMES, S0State, S3_AUTO_APPROVE_MAX_YOCTO,
+    S3_AUTO_MIN_COMPLETED, Tier,
 };
 
 #[near_sdk::ext_contract(ext_self)]
@@ -37,6 +40,11 @@ pub trait Callbacks {
     fn on_finalize_payout_proposal(&mut self, issue_id: IssueId);
     fn on_payout_transfer(&mut self, issue_id: IssueId, payout_id: PayoutId);
     fn on_refund_transfer(&mut self, issue_id: IssueId, payout_id: PayoutId);
+    fn on_s0_bounty_proposal_created(&mut self, issue_id: IssueId);
+    fn on_s0_bounty_verified(&mut self, issue_id: IssueId, bounty_id: u64, replacing: bool);
+    fn on_bounty_done_proposal(&mut self, issue_id: IssueId, proposal_id: u64);
+    fn on_bounty_done_voted(&mut self, issue_id: IssueId, proposal_id: u64);
+    fn on_confirm_payout(&mut self, issue_id: IssueId);
 }
 
 #[near(contract_state)]
@@ -113,7 +121,6 @@ impl BountyBoard {
             .get(&REPO_ID)
             .ok_or(ContractError::RepoNotFound)?;
         access::assert_maintainer(repo, &creator)?;
-        validation::validate_tier(tier)?;
         validation::validate_amount(amount.0)?;
 
         if self.issue_by_number.contains_key(&(REPO_ID, issue_number)) {
@@ -170,7 +177,15 @@ impl BountyBoard {
             intended_contributor: contributor.clone(),
             merge_proof: None,
             security: None,
-            s0: None,
+            s0: if tier.is_s0() {
+                Some(S0State {
+                    proposal_id: None,
+                    native_bounty_id: None,
+                    bounty_done_proposal_id: None,
+                })
+            } else {
+                None
+            },
             payout_id: None,
             payout_proposal_id: None,
             pending_payout: None,
@@ -199,7 +214,9 @@ impl BountyBoard {
             .repos
             .get(&REPO_ID)
             .ok_or(ContractError::RepoNotFound)?;
-        self.maybe_escalate(repo_view, &mut issue);
+        if !tier.is_s0() {
+            self.maybe_escalate(repo_view, &mut issue);
+        }
         let status = issue.status;
         self.issues.insert(issue_id, issue);
         self.issue_by_number
@@ -215,7 +232,494 @@ impl BountyBoard {
             status,
         );
 
+        if tier.is_s0() {
+            self.create_s0_bounty_proposal(issue_id);
+        }
+
         Ok(issue_id)
+    }
+
+    fn s0_bounty_description(
+        &self,
+        issue_id: IssueId,
+        issue: &Issue,
+    ) -> Result<String, ContractError> {
+        match issue.kind {
+            IssueKind::PublicIssue => {
+                let issue_number = issue.issue_number.ok_or(ContractError::InvalidState)?;
+                Ok(format!("bountyboard:{issue_id}:{issue_number}"))
+            }
+            IssueKind::PrivateSecurity => {
+                let private_ref = issue
+                    .private_ref
+                    .as_ref()
+                    .ok_or(ContractError::InvalidState)?;
+                Ok(format!("Private security bounty {private_ref}"))
+            }
+        }
+    }
+
+    fn s0_bounty(&self, issue_id: IssueId, issue: &Issue) -> Result<Bounty, ContractError> {
+        Ok(Bounty {
+            description: self.s0_bounty_description(issue_id, issue)?,
+            token: String::new(),
+            amount: issue.amount,
+            times: S0_BOUNTY_TIMES,
+            max_deadline: near_sdk::json_types::U64(S0_BOUNTY_MAX_DEADLINE),
+        })
+    }
+
+    fn create_s0_bounty_proposal(&self, issue_id: IssueId) {
+        let Some(issue) = self.issues.get(&issue_id) else {
+            return;
+        };
+        let Ok(bounty) = self.s0_bounty(issue_id, issue) else {
+            return;
+        };
+        let input = ProposalInput {
+            description: format!("BountyBoard bounty issue {issue_id}"),
+            kind: ProposalKind::AddBounty { bounty },
+        };
+
+        ext_dao::ext(self.dao.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(self.dao_params.proposal_bond.0))
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_ADD_PROPOSAL))
+            .add_proposal(input)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_s0_bounty_proposal_created(issue_id),
+            )
+            .detach();
+    }
+
+    fn verify_s0_bounty(
+        &self,
+        issue_id: IssueId,
+        issue: &Issue,
+        bounty: &BountyOutput,
+    ) -> Result<(), ContractError> {
+        if bounty.bounty.description != self.s0_bounty_description(issue_id, issue)? {
+            return Err(ContractError::BountyDescriptionMismatch);
+        }
+        if bounty.bounty.amount.0 != issue.amount.0 {
+            return Err(ContractError::BountyAmountMismatch);
+        }
+        if !bounty.bounty.token.is_empty() {
+            return Err(ContractError::BountyTokenMismatch);
+        }
+        Ok(())
+    }
+
+    #[private]
+    pub fn on_s0_bounty_proposal_created(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<u64, PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        let Some(s0) = issue.s0.as_mut() else {
+            return;
+        };
+        match result {
+            Ok(proposal_id) => {
+                s0.proposal_id = Some(proposal_id);
+                self.issues.insert(issue_id, issue);
+                events::s0_proposal_created(issue_id, proposal_id);
+            }
+            Err(_) => {
+                let amount = issue.amount.0;
+                issue.status = IssueStatus::Cancelled;
+                self.issues.insert(issue_id, issue);
+                if let Some(repo) = self.repos.get_mut(&REPO_ID) {
+                    repo.committed = U128(repo.committed.0.saturating_sub(amount));
+                }
+                events::s0_proposal_failed(issue_id, "DAO add_proposal call failed".to_string());
+            }
+        }
+    }
+
+    #[handle_result]
+    pub fn register_s0_bounty(
+        &mut self,
+        issue_id: IssueId,
+        bounty_id: u64,
+    ) -> Result<Promise, ContractError> {
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .cloned()
+            .ok_or(ContractError::IssueNotFound)?;
+        if !issue.tier.is_s0() {
+            return Err(ContractError::WrongTier);
+        }
+        let s0 = issue.s0.as_ref().ok_or(ContractError::InvalidState)?;
+        if s0.proposal_id.is_none() || s0.native_bounty_id.is_some() {
+            return Err(ContractError::InvalidState);
+        }
+        if matches!(issue.status, IssueStatus::Cancelled | IssueStatus::Paid) {
+            return Err(ContractError::InvalidState);
+        }
+
+        Ok(ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_GET_BOUNTY))
+            .get_bounty(bounty_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_s0_bounty_verified(issue_id, bounty_id, false),
+            ))
+    }
+
+    #[private]
+    pub fn on_s0_bounty_verified(
+        &mut self,
+        issue_id: IssueId,
+        bounty_id: u64,
+        replacing: bool,
+        #[callback_result] result: Result<BountyOutput, PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        if !issue.tier.is_s0() {
+            return;
+        }
+        if replacing && !self.can_replace_s0_bounty(&issue) {
+            events::s0_verification_failed(
+                issue_id,
+                bounty_id,
+                "issue is no longer replaceable".to_string(),
+            );
+            return;
+        }
+        let bounty = match result {
+            Ok(bounty) => bounty,
+            Err(_) => {
+                events::s0_verification_failed(
+                    issue_id,
+                    bounty_id,
+                    "DAO get_bounty call failed".to_string(),
+                );
+                return;
+            }
+        };
+        if let Err(error) = self.verify_s0_bounty(issue_id, &issue, &bounty) {
+            events::s0_verification_failed(issue_id, bounty_id, error.to_string());
+            return;
+        }
+        let Some(s0) = issue.s0.as_mut() else {
+            return;
+        };
+        s0.native_bounty_id = Some(bounty_id);
+        if !replacing {
+            issue.status = IssueStatus::Approved;
+            issue.blocked_reason = None;
+        }
+        self.issues.insert(issue_id, issue);
+        if replacing {
+            events::s0_bounty_replaced(issue_id, bounty_id);
+        } else {
+            events::s0_bounty_registered(issue_id, bounty_id);
+        }
+    }
+
+    fn can_replace_s0_bounty(&self, issue: &Issue) -> bool {
+        match issue.kind {
+            IssueKind::PublicIssue => {
+                issue.merge_proof.is_none()
+                    && !matches!(issue.status, IssueStatus::Cancelled | IssueStatus::Paid)
+            }
+            IssueKind::PrivateSecurity => !matches!(
+                issue.status,
+                IssueStatus::PayoutPending
+                    | IssueStatus::PayoutProcessing
+                    | IssueStatus::PayoutFailed
+                    | IssueStatus::Paid
+                    | IssueStatus::Refunded
+                    | IssueStatus::Cancelled
+            ),
+        }
+    }
+
+    #[handle_result]
+    pub fn replace_s0_bounty(
+        &mut self,
+        issue_id: IssueId,
+        bounty_id: u64,
+    ) -> Result<Promise, ContractError> {
+        access::assert_dao(self)?;
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .cloned()
+            .ok_or(ContractError::IssueNotFound)?;
+        if !issue.tier.is_s0() {
+            return Err(ContractError::WrongTier);
+        }
+        let s0 = issue.s0.as_ref().ok_or(ContractError::InvalidState)?;
+        if s0.native_bounty_id.is_none() {
+            return Err(ContractError::InvalidState);
+        }
+        if !self.can_replace_s0_bounty(&issue) {
+            return Err(ContractError::InvalidState);
+        }
+
+        Ok(ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_GET_BOUNTY))
+            .get_bounty(bounty_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_s0_bounty_verified(issue_id, bounty_id, true),
+            ))
+    }
+
+    #[handle_result]
+    pub fn approve_bounty_done(
+        &mut self,
+        issue_id: IssueId,
+        proposal_id: u64,
+    ) -> Result<Promise, ContractError> {
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .cloned()
+            .ok_or(ContractError::IssueNotFound)?;
+        if !issue.tier.is_s0() {
+            return Err(ContractError::WrongTier);
+        }
+        if issue.status != IssueStatus::Merged {
+            return Err(ContractError::InvalidState);
+        }
+        let s0 = issue.s0.as_ref().ok_or(ContractError::InvalidState)?;
+        if s0.native_bounty_id.is_none() || s0.bounty_done_proposal_id.is_some() {
+            return Err(ContractError::InvalidState);
+        }
+        self.resolve_recipient(&issue)?;
+
+        Ok(ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_bounty_done_proposal(issue_id, proposal_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_bounty_done_proposal(
+        &mut self,
+        issue_id: IssueId,
+        proposal_id: u64,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        if issue.status != IssueStatus::Merged {
+            return;
+        }
+        let Some(s0) = issue.s0.as_ref() else {
+            return;
+        };
+        let Some(bounty_id) = s0.native_bounty_id else {
+            return;
+        };
+        let proposal = match result {
+            Ok(proposal) => proposal,
+            Err(_) => return,
+        };
+        let ProposalKind::BountyDone {
+            bounty_id: done_bounty_id,
+            receiver_id,
+        } = &proposal.proposal.kind
+        else {
+            return;
+        };
+        if *done_bounty_id != bounty_id {
+            return;
+        }
+        let Ok(recipient) = self.resolve_recipient(&issue) else {
+            return;
+        };
+        if *receiver_id != recipient {
+            return;
+        }
+        if !matches!(
+            proposal.proposal.status,
+            ProposalStatus::InProgress | ProposalStatus::Approved
+        ) {
+            return;
+        }
+
+        if let Some(s0) = issue.s0.as_mut() {
+            s0.bounty_done_proposal_id = Some(proposal_id);
+        }
+
+        if proposal.proposal.status == ProposalStatus::Approved {
+            issue.status = IssueStatus::PayoutPending;
+            self.issues.insert(issue_id, issue);
+            return;
+        }
+
+        self.issues.insert(issue_id, issue);
+        ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_ACT_PROPOSAL))
+            .act_proposal(proposal_id, Action::VoteApprove, None)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_bounty_done_voted(issue_id, proposal_id),
+            )
+            .detach();
+    }
+
+    #[private]
+    pub fn on_bounty_done_voted(
+        &mut self,
+        issue_id: IssueId,
+        proposal_id: u64,
+        #[callback_result] result: Result<(), PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                if issue.status != IssueStatus::Merged {
+                    return;
+                }
+                issue.status = IssueStatus::PayoutPending;
+                self.issues.insert(issue_id, issue);
+                events::bounty_done_voted(issue_id, proposal_id);
+            }
+            Err(_) => {
+                if let Some(s0) = issue.s0.as_mut()
+                    && s0.bounty_done_proposal_id == Some(proposal_id)
+                {
+                    s0.bounty_done_proposal_id = None;
+                    self.issues.insert(issue_id, issue);
+                }
+            }
+        }
+    }
+
+    #[handle_result]
+    pub fn confirm_payout(&mut self, issue_id: IssueId) -> Result<Promise, ContractError> {
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .cloned()
+            .ok_or(ContractError::IssueNotFound)?;
+        if !issue.tier.is_s0() {
+            return Err(ContractError::WrongTier);
+        }
+        if issue.status != IssueStatus::PayoutPending || issue.payout_id.is_some() {
+            return Err(ContractError::InvalidState);
+        }
+        let s0 = issue.s0.as_ref().ok_or(ContractError::InvalidState)?;
+        let proposal_id = s0
+            .bounty_done_proposal_id
+            .ok_or(ContractError::InvalidState)?;
+
+        Ok(ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_confirm_payout(issue_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_confirm_payout(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) {
+        let Some(mut issue) = self.issues.get(&issue_id).cloned() else {
+            return;
+        };
+        if !issue.tier.is_s0()
+            || issue.status != IssueStatus::PayoutPending
+            || issue.payout_id.is_some()
+        {
+            return;
+        }
+        let Some(s0) = issue.s0.as_ref() else {
+            return;
+        };
+        let Some(bounty_id) = s0.native_bounty_id else {
+            return;
+        };
+        let proposal = match result {
+            Ok(proposal) => proposal,
+            Err(_) => return,
+        };
+        if proposal.proposal.status != ProposalStatus::Approved {
+            return;
+        }
+        let ProposalKind::BountyDone {
+            bounty_id: done_bounty_id,
+            receiver_id,
+        } = &proposal.proposal.kind
+        else {
+            return;
+        };
+        if *done_bounty_id != bounty_id {
+            return;
+        }
+        let Ok(recipient) = self.resolve_recipient(&issue) else {
+            return;
+        };
+        if *receiver_id != recipient {
+            return;
+        }
+        let Ok(proof) = payout_proof(&issue) else {
+            return;
+        };
+
+        let now = env::block_timestamp();
+        let payout_id = self.next_payout_id;
+        self.next_payout_id += 1;
+        let payout = PayoutRecord {
+            issue_id,
+            recipient: recipient.clone(),
+            amount: issue.amount,
+            tier: issue.tier,
+            points: issue.tier.points(),
+            status: PayoutStatus::Paid,
+            attempt: 1,
+            proof,
+            created_at: now,
+            updated_at: now,
+        };
+        self.payouts.insert(payout_id, payout.clone());
+
+        issue.status = IssueStatus::Paid;
+        issue.payout_id = Some(payout_id);
+        issue.pending_payout = None;
+        issue.blocked_reason = None;
+        self.issues.insert(issue_id, issue.clone());
+        if let Some(repo) = self.repos.get_mut(&REPO_ID) {
+            repo.committed = U128(repo.committed.0.saturating_sub(issue.amount.0));
+        }
+        self.apply_payout_reputation(&issue, payout_id);
+        self.count_approved_bounties(&issue);
+        self.maybe_create_candidate(&recipient);
+        events::payout_completed(
+            issue_id,
+            payout_id,
+            recipient,
+            payout.amount.0,
+            payout.tier,
+            payout.points,
+        );
     }
 
     fn is_conflicted(&self, issue: &Issue, maintainer: &AccountId) -> bool {
@@ -445,6 +949,14 @@ impl BountyBoard {
         }
         if matches!(issue.status, IssueStatus::Paid | IssueStatus::Cancelled) {
             return Err(ContractError::InvalidState);
+        }
+        if issue.tier.is_s0() {
+            let s0 = issue.s0.as_ref().ok_or(ContractError::InvalidState)?;
+            if s0.native_bounty_id.is_none()
+                || !matches!(issue.status, IssueStatus::Approved | IssueStatus::Escalated)
+            {
+                return Err(ContractError::InvalidState);
+            }
         }
         if issue.claimants.contains(&caller) {
             return Ok(());
@@ -1797,23 +2309,23 @@ mod tests {
 
         assert_eq!(
             contract.create_bounty(1, Tier::S0, U128(ONE_NEAR), None),
-            Err(ContractError::S0NotEnabled)
+            Ok(0)
         );
         assert_eq!(
-            contract.create_bounty(1, Tier::S2, U128(0), None),
+            contract.create_bounty(2, Tier::S2, U128(0), None),
             Err(ContractError::InvalidAmount)
         );
         assert_eq!(
-            contract.create_bounty(1, Tier::S2, U128(11 * ONE_NEAR), None),
+            contract.create_bounty(3, Tier::S2, U128(11 * ONE_NEAR), None),
             Err(ContractError::BudgetExceeded)
         );
         assert_eq!(
-            contract.create_bounty(1, Tier::S2, U128(6 * ONE_NEAR), None),
+            contract.create_bounty(4, Tier::S2, U128(6 * ONE_NEAR), None),
             Err(ContractError::DailyCapExceeded)
         );
         assert_eq!(
-            contract.create_bounty(1, Tier::S1, U128(6 * ONE_NEAR), None),
-            Ok(0)
+            contract.create_bounty(5, Tier::S1, U128(6 * ONE_NEAR), None),
+            Ok(1)
         );
     }
 
@@ -2532,6 +3044,501 @@ mod tests {
         assert!(!json.contains("researcher_github"));
     }
 
+    fn s0_setup() -> (BountyBoard, IssueId) {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        set_predecessor(accounts(1));
+        let issue_id = contract.create_bounty(7, Tier::S0, U128(10), None).unwrap();
+        (contract, issue_id)
+    }
+
+    fn s0_output(contract: &BountyBoard, issue_id: IssueId, bounty_id: u64) -> BountyOutput {
+        let issue = contract.get_issue(issue_id).unwrap();
+        BountyOutput {
+            id: bounty_id,
+            bounty: contract.s0_bounty(issue_id, &issue).unwrap(),
+        }
+    }
+
+    #[test]
+    fn s0_bounty_descriptions_are_kind_specific() {
+        let contract = BountyBoard::new(accounts(0), None);
+        let mut public = sample_issue(IssueKind::PublicIssue, 42);
+        public.tier = Tier::S0;
+        assert_eq!(
+            contract.s0_bounty(7, &public).unwrap().description,
+            "bountyboard:7:42"
+        );
+
+        let mut private = sample_issue(IssueKind::PrivateSecurity, 3);
+        private.tier = Tier::S0;
+        let private_ref = private.private_ref.clone().unwrap();
+        assert_eq!(
+            contract.s0_bounty(8, &private).unwrap().description,
+            format!("Private security bounty {private_ref}")
+        );
+    }
+
+    #[test]
+    fn create_s0_bounty_creates_pending_proposal_without_voting() {
+        let (mut contract, issue_id) = s0_setup();
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.tier, Tier::S0);
+        assert_eq!(issue.status, IssueStatus::PendingApproval);
+        assert_eq!(
+            issue.s0,
+            Some(S0State {
+                proposal_id: None,
+                native_bounty_id: None,
+                bounty_done_proposal_id: None,
+            })
+        );
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(10));
+        assert_eq!(count_event("s0_proposal_created"), 0);
+
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.s0.unwrap().proposal_id, Some(3));
+        assert_eq!(count_event("s0_proposal_created"), 1);
+    }
+
+    #[test]
+    fn failed_s0_proposal_cancels_and_releases_commitment() {
+        let (mut contract, issue_id) = s0_setup();
+
+        contract.on_s0_bounty_proposal_created(issue_id, Err(PromiseError::Failed));
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Cancelled);
+        assert!(issue.s0.is_some());
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(0));
+        assert_eq!(count_event("s0_proposal_failed"), 1);
+    }
+
+    #[test]
+    fn register_s0_bounty_verifies_native_bounty() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        let bounty = s0_output(&contract, issue_id, 5);
+
+        let _promise = contract.register_s0_bounty(issue_id, 5).unwrap();
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(bounty));
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Approved);
+        assert_eq!(issue.s0.unwrap().native_bounty_id, Some(5));
+        assert_eq!(count_event("s0_bounty_registered"), 1);
+        assert!(matches!(
+            contract.register_s0_bounty(issue_id, 5),
+            Err(ContractError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn register_s0_bounty_rejects_wrong_native_bounty() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+
+        let wrong_amount = BountyOutput {
+            id: 5,
+            bounty: Bounty {
+                description: format!("bountyboard:{issue_id}:7"),
+                token: String::new(),
+                amount: U128(11),
+                times: 1,
+                max_deadline: near_sdk::json_types::U64(S0_BOUNTY_MAX_DEADLINE),
+            },
+        };
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(wrong_amount));
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        let wrong_description = BountyOutput {
+            id: 5,
+            bounty: Bounty {
+                description: "wrong".to_string(),
+                ..s0_output(&contract, issue_id, 5).bounty
+            },
+        };
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(wrong_description));
+        assert!(
+            contract
+                .get_issue(issue_id)
+                .unwrap()
+                .s0
+                .unwrap()
+                .native_bounty_id
+                .is_none()
+        );
+
+        let wrong_token = BountyOutput {
+            id: 5,
+            bounty: Bounty {
+                token: "usdc.testnet".to_string(),
+                ..s0_output(&contract, issue_id, 5).bounty
+            },
+        };
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(wrong_token));
+        assert!(
+            contract
+                .get_issue(issue_id)
+                .unwrap()
+                .s0
+                .unwrap()
+                .native_bounty_id
+                .is_none()
+        );
+
+        contract.on_s0_bounty_verified(issue_id, 5, false, Err(PromiseError::Failed));
+        assert!(
+            contract
+                .get_issue(issue_id)
+                .unwrap()
+                .s0
+                .unwrap()
+                .native_bounty_id
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn register_s0_bounty_requires_s0_and_recorded_proposal() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        set_predecessor(accounts(1));
+        let issue_id = contract.create_bounty(7, Tier::S2, U128(10), None).unwrap();
+        assert!(matches!(
+            contract.register_s0_bounty(issue_id, 1),
+            Err(ContractError::WrongTier)
+        ));
+
+        let (mut contract, issue_id) = s0_setup();
+        assert!(matches!(
+            contract.register_s0_bounty(issue_id, 1),
+            Err(ContractError::InvalidState)
+        ));
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        contract.on_s0_bounty_verified(issue_id, 1, false, Err(PromiseError::Failed));
+        assert!(
+            contract
+                .get_issue(issue_id)
+                .unwrap()
+                .s0
+                .unwrap()
+                .native_bounty_id
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn replace_s0_bounty_updates_public_and_private_issues() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(s0_output(&contract, issue_id, 5)));
+
+        set_predecessor(accounts(0));
+        let _promise = contract.replace_s0_bounty(issue_id, 9).unwrap();
+        contract.on_s0_bounty_verified(issue_id, 9, true, Ok(s0_output(&contract, issue_id, 9)));
+        assert_eq!(
+            contract
+                .get_issue(issue_id)
+                .unwrap()
+                .s0
+                .unwrap()
+                .native_bounty_id,
+            Some(9)
+        );
+        assert_eq!(count_event("s0_bounty_replaced"), 1);
+
+        let mut private = sample_issue(IssueKind::PrivateSecurity, 9);
+        private.tier = Tier::S0;
+        private.status = IssueStatus::Approved;
+        private.s0 = Some(S0State {
+            proposal_id: Some(3),
+            native_bounty_id: Some(5),
+            bounty_done_proposal_id: None,
+        });
+        private.security = Some(SecurityDisclosure {
+            ghsa_id: "GHSA-aaaa-bbbb-cccc".to_string(),
+            advisory_url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc".to_string(),
+            researcher_github: "bob".to_string(),
+            disclosed_at: 0,
+        });
+        contract.issues.insert(20, private.clone());
+        let _promise = contract.replace_s0_bounty(20, 11).unwrap();
+        contract.on_s0_bounty_verified(20, 11, true, Ok(s0_output(&contract, 20, 11)));
+        assert_eq!(
+            contract.get_issue(20).unwrap().s0.unwrap().native_bounty_id,
+            Some(11)
+        );
+    }
+
+    #[test]
+    fn replace_s0_bounty_rejects_merged_public_issue() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        let mut issue = contract.get_issue(issue_id).unwrap();
+        issue.status = IssueStatus::Merged;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 1,
+            pr_author: "alice".to_string(),
+            commit: "abc".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
+        contract.issues.insert(issue_id, issue);
+
+        set_predecessor(accounts(0));
+        assert!(matches!(
+            contract.replace_s0_bounty(issue_id, 9),
+            Err(ContractError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn approve_bounty_done_rejects_receiver_mismatch() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.identities.insert("alice".to_string(), accounts(4));
+        let mut issue = contract.get_issue(issue_id).unwrap();
+        issue.status = IssueStatus::Merged;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 11,
+            pr_author: "alice".to_string(),
+            commit: "abc123".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
+        contract.issues.insert(issue_id, issue);
+
+        contract.on_bounty_done_proposal(
+            issue_id,
+            7,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::InProgress,
+                    kind: ProposalKind::BountyDone {
+                        bounty_id: 5,
+                        receiver_id: accounts(5),
+                    },
+                },
+            }),
+        );
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Merged);
+        assert!(issue.s0.unwrap().bounty_done_proposal_id.is_none());
+    }
+
+    #[test]
+    fn approve_bounty_done_votes_then_moves_to_payout_pending() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.identities.insert("alice".to_string(), accounts(4));
+        let mut issue = contract.get_issue(issue_id).unwrap();
+        issue.status = IssueStatus::Merged;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 11,
+            pr_author: "alice".to_string(),
+            commit: "abc123".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
+        contract.issues.insert(issue_id, issue);
+
+        contract.on_bounty_done_proposal(
+            issue_id,
+            7,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::InProgress,
+                    kind: ProposalKind::BountyDone {
+                        bounty_id: 5,
+                        receiver_id: accounts(4),
+                    },
+                },
+            }),
+        );
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Merged);
+        assert_eq!(issue.s0.unwrap().bounty_done_proposal_id, Some(7));
+
+        contract.on_bounty_done_voted(issue_id, 7, Ok(()));
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::PayoutPending
+        );
+        assert_eq!(count_event("bounty_done_voted"), 1);
+    }
+
+    #[test]
+    fn approve_bounty_done_skips_vote_for_approved_proposal() {
+        let (mut contract, issue_id) = s0_setup();
+        contract.identities.insert("alice".to_string(), accounts(4));
+        let mut issue = contract.get_issue(issue_id).unwrap();
+        issue.status = IssueStatus::Merged;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 11,
+            pr_author: "alice".to_string(),
+            commit: "abc123".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue.s0.as_mut().unwrap().native_bounty_id = Some(5);
+        contract.issues.insert(issue_id, issue);
+
+        contract.on_bounty_done_proposal(
+            issue_id,
+            7,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::Approved,
+                    kind: ProposalKind::BountyDone {
+                        bounty_id: 5,
+                        receiver_id: accounts(4),
+                    },
+                },
+            }),
+        );
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::PayoutPending);
+        assert_eq!(issue.s0.unwrap().bounty_done_proposal_id, Some(7));
+        assert_eq!(count_event("bounty_done_voted"), 0);
+    }
+
+    fn payout_pending_s0() -> (BountyBoard, IssueId) {
+        let (mut contract, issue_id) = s0_setup();
+        contract.identities.insert("alice".to_string(), accounts(4));
+        let mut issue = contract.get_issue(issue_id).unwrap();
+        issue.status = IssueStatus::PayoutPending;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 11,
+            pr_author: "alice".to_string(),
+            commit: "abc123".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue.s0 = Some(S0State {
+            proposal_id: Some(3),
+            native_bounty_id: Some(5),
+            bounty_done_proposal_id: Some(7),
+        });
+        contract.issues.insert(issue_id, issue);
+        (contract, issue_id)
+    }
+
+    fn approved_bounty_done(_issue_id: IssueId, receiver: AccountId) -> ProposalOutput {
+        ProposalOutput {
+            id: 7,
+            proposal: crate::dao::Proposal {
+                status: ProposalStatus::Approved,
+                kind: ProposalKind::BountyDone {
+                    bounty_id: 5,
+                    receiver_id: receiver,
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn confirm_payout_pays_s0_and_records_eight_points() {
+        let (mut contract, issue_id) = payout_pending_s0();
+
+        contract.on_confirm_payout(issue_id, Ok(approved_bounty_done(issue_id, accounts(4))));
+
+        let issue = contract.get_issue(issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Paid);
+        let payout_id = issue.payout_id.unwrap();
+        let payout = contract.payouts.get(&payout_id).unwrap();
+        assert_eq!(payout.status, PayoutStatus::Paid);
+        assert_eq!(payout.points, 8);
+        assert_eq!(payout.recipient, accounts(4));
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(0));
+        assert_eq!(contract.get_reputation(accounts(4)).points, 8);
+        assert_eq!(contract.get_reputation(accounts(4)).completed, 1);
+        assert_eq!(count_event("payout_completed"), 1);
+    }
+
+    #[test]
+    fn confirm_payout_requires_approved_matching_proposal() {
+        let (mut contract, issue_id) = payout_pending_s0();
+
+        contract.on_confirm_payout(
+            issue_id,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::InProgress,
+                    kind: ProposalKind::BountyDone {
+                        bounty_id: 5,
+                        receiver_id: accounts(4),
+                    },
+                },
+            }),
+        );
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::PayoutPending
+        );
+
+        contract.on_confirm_payout(issue_id, Ok(approved_bounty_done(issue_id, accounts(5))));
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::PayoutPending
+        );
+
+        contract.on_confirm_payout(
+            issue_id,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::Approved,
+                    kind: ProposalKind::BountyDone {
+                        bounty_id: 99,
+                        receiver_id: accounts(4),
+                    },
+                },
+            }),
+        );
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::PayoutPending
+        );
+
+        contract.on_confirm_payout(issue_id, Ok(approved_bounty_done(issue_id, accounts(4))));
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().status,
+            IssueStatus::Paid
+        );
+        assert!(matches!(
+            contract.confirm_payout(issue_id),
+            Err(ContractError::InvalidState)
+        ));
+    }
+
+    #[test]
+    fn s0_public_claim_requires_registered_bounty() {
+        let (mut contract, issue_id) = s0_setup();
+        set_predecessor(accounts(4));
+        assert_eq!(contract.claim(issue_id), Err(ContractError::InvalidState));
+
+        set_predecessor(accounts(0));
+        contract.on_s0_bounty_proposal_created(issue_id, Ok(3));
+        contract.on_s0_bounty_verified(issue_id, 5, false, Ok(s0_output(&contract, issue_id, 5)));
+        set_predecessor(accounts(4));
+        assert_eq!(contract.claim(issue_id), Ok(()));
+        assert_eq!(
+            contract.get_issue(issue_id).unwrap().claimants,
+            vec![accounts(4)]
+        );
+    }
+
     fn count_event(event: &str) -> usize {
         let needle = format!("\"event\":\"{event}\"");
         get_logs()
@@ -3113,7 +4120,10 @@ mod tests {
         let ProposalKind::FunctionCall {
             receiver_id,
             actions,
-        } = pending.proposal_kind;
+        } = pending.proposal_kind
+        else {
+            panic!("expected function call");
+        };
         assert_eq!(receiver_id, env::current_account_id());
         assert_eq!(actions[0].method_name, "payout_near");
         assert_eq!(actions[0].deposit, U128(10));

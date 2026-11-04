@@ -18,6 +18,10 @@ pub enum ContractError {
     DuplicatePrivateRef,
     ClaimantLimitReached,
     WrongIssueKind,
+    WrongTier,
+    BountyDescriptionMismatch,
+    BountyAmountMismatch,
+    BountyTokenMismatch,
     PrivateSecurityNoClaims,
     SecurityNotDisclosed,
     SecurityAlreadyDisclosed,
@@ -57,6 +61,12 @@ impl std::fmt::Display for ContractError {
             ContractError::DuplicatePrivateRef => "private reference already registered",
             ContractError::ClaimantLimitReached => "claimant list is full",
             ContractError::WrongIssueKind => "wrong issue kind for this operation",
+            ContractError::WrongTier => "wrong bounty tier for this operation",
+            ContractError::BountyDescriptionMismatch => {
+                "native bounty description does not match the issue"
+            }
+            ContractError::BountyAmountMismatch => "native bounty amount does not match the issue",
+            ContractError::BountyTokenMismatch => "native bounty must pay in NEAR",
             ContractError::PrivateSecurityNoClaims => {
                 "private security bounties do not accept public claims"
             }

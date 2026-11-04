@@ -1,13 +1,5 @@
 use crate::errors::ContractError;
-use crate::types::{Repo, Tier};
-
-pub fn validate_tier(tier: Tier) -> Result<(), ContractError> {
-    if tier.is_s0() {
-        Err(ContractError::S0NotEnabled)
-    } else {
-        Ok(())
-    }
-}
+use crate::types::Repo;
 
 pub fn validate_amount(amount: u128) -> Result<(), ContractError> {
     if amount == 0 {
@@ -69,14 +61,6 @@ mod tests {
             paused: false,
             bootstrap_ended: false,
         }
-    }
-
-    #[test]
-    fn tier_validation_rejects_s0() {
-        assert_eq!(validate_tier(Tier::S0), Err(ContractError::S0NotEnabled));
-        assert_eq!(validate_tier(Tier::S1), Ok(()));
-        assert_eq!(validate_tier(Tier::S2), Ok(()));
-        assert_eq!(validate_tier(Tier::S3), Ok(()));
     }
 
     #[test]

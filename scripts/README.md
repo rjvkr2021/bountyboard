@@ -49,6 +49,24 @@ not only the unlocked portion.
 `verify:policy` reads `get_policy` from the DAO and exits non-zero if any role,
 permission, or vote-policy invariant is violated.
 
+## S0 native bounty flow
+
+S0 bounties use a Sputnik native bounty for posting approval. The three wallet
+steps are separate from BountyBoard:
+
+1. `bounty_claim(id, deadline)` on the DAO attaches the DAO `bounty_bond`.
+2. After the work is merged, `bounty_done(id, account_id, description)` on the
+   DAO attaches the DAO `proposal_bond` and creates the `BountyDone` proposal.
+3. BountyBoard's permissionless `approve_bounty_done(issue_id, proposal_id)`
+   votes `VoteApprove` if needed; `confirm_payout(issue_id)` records the payout
+   once the proposal is `Approved`.
+
+The native bounty has a single claim slot. A griefer can occupy it by claiming
+first; `replace_s0_bounty` lets the council point the issue at a replacement
+bounty, and a higher `bounty_bond` raises the cost of griefing. A private
+researcher must link their GitHub identity before `approve_bounty_done` can
+release the payout.
+
 ## Other commands
 
 - `npm run dao:fetch` downloads and verifies the pinned Sputnik wasm only.

@@ -27,6 +27,8 @@ pub const GAS_FOR_PAYOUT_CALLBACK: u64 = 20_000_000_000_000;
 pub const GAS_FOR_PAYOUT_TRANSFER_CALLBACK: u64 = 20_000_000_000_000;
 pub const CANDIDATE_POINTS: u32 = 10;
 pub const CANDIDATE_COMPLETED: u64 = 3;
+pub const S0_BOUNTY_TIMES: u32 = 1;
+pub const S0_BOUNTY_MAX_DEADLINE: u64 = 30 * DAY_SECS * 1_000_000_000;
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

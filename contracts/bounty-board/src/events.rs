@@ -116,6 +116,49 @@ pub struct PayoutRefunded {
     pub points: u32,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0ProposalCreated {
+    pub issue_id: IssueId,
+    pub proposal_id: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0ProposalFailed {
+    pub issue_id: IssueId,
+    pub reason: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0BountyRegistered {
+    pub issue_id: IssueId,
+    pub bounty_id: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0BountyReplaced {
+    pub issue_id: IssueId,
+    pub bounty_id: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyDoneVoted {
+    pub issue_id: IssueId,
+    pub proposal_id: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S0VerificationFailed {
+    pub issue_id: IssueId,
+    pub bounty_id: u64,
+    pub reason: String,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -184,6 +227,61 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             issue_id,
             maintainer,
             released: U128(released),
+        },
+    );
+}
+
+pub fn s0_proposal_created(issue_id: IssueId, proposal_id: u64) {
+    emit(
+        "s0_proposal_created",
+        &S0ProposalCreated {
+            issue_id,
+            proposal_id,
+        },
+    );
+}
+
+pub fn s0_proposal_failed(issue_id: IssueId, reason: String) {
+    emit("s0_proposal_failed", &S0ProposalFailed { issue_id, reason });
+}
+
+pub fn s0_bounty_registered(issue_id: IssueId, bounty_id: u64) {
+    emit(
+        "s0_bounty_registered",
+        &S0BountyRegistered {
+            issue_id,
+            bounty_id,
+        },
+    );
+}
+
+pub fn s0_bounty_replaced(issue_id: IssueId, bounty_id: u64) {
+    emit(
+        "s0_bounty_replaced",
+        &S0BountyReplaced {
+            issue_id,
+            bounty_id,
+        },
+    );
+}
+
+pub fn bounty_done_voted(issue_id: IssueId, proposal_id: u64) {
+    emit(
+        "bounty_done_voted",
+        &BountyDoneVoted {
+            issue_id,
+            proposal_id,
+        },
+    );
+}
+
+pub fn s0_verification_failed(issue_id: IssueId, bounty_id: u64, reason: String) {
+    emit(
+        "s0_verification_failed",
+        &S0VerificationFailed {
+            issue_id,
+            bounty_id,
+            reason,
         },
     );
 }
@@ -542,5 +640,44 @@ mod tests {
         let refunded_value = parse_event(&refunded);
         assert_eq!(refunded_value["event"], "payout_refunded");
         assert_eq!(refunded_value["data"]["amount"], "10");
+    }
+    #[test]
+    fn s0_event_shapes() {
+        let created = parse_event(&event_json(
+            "s0_proposal_created",
+            &S0ProposalCreated {
+                issue_id: 3,
+                proposal_id: 7,
+            },
+        ));
+        assert_eq!(created["data"]["issue_id"], 3);
+        assert_eq!(created["data"]["proposal_id"], 7);
+
+        let registered = parse_event(&event_json(
+            "s0_bounty_registered",
+            &S0BountyRegistered {
+                issue_id: 3,
+                bounty_id: 5,
+            },
+        ));
+        assert_eq!(registered["data"]["bounty_id"], 5);
+
+        let replaced = parse_event(&event_json(
+            "s0_bounty_replaced",
+            &S0BountyReplaced {
+                issue_id: 3,
+                bounty_id: 6,
+            },
+        ));
+        assert_eq!(replaced["data"]["bounty_id"], 6);
+
+        let voted = parse_event(&event_json(
+            "bounty_done_voted",
+            &BountyDoneVoted {
+                issue_id: 3,
+                proposal_id: 9,
+            },
+        ));
+        assert_eq!(voted["data"]["proposal_id"], 9);
     }
 }

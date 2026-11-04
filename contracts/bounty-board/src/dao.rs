@@ -5,6 +5,7 @@ pub const GAS_FOR_ADD_PROPOSAL: u64 = 30_000_000_000_000;
 pub const GAS_FOR_ACT_PROPOSAL: u64 = 30_000_000_000_000;
 pub const GAS_FOR_GET_POLICY: u64 = 10_000_000_000_000;
 pub const GAS_FOR_GET_PROPOSAL: u64 = 10_000_000_000_000;
+pub const GAS_FOR_GET_BOUNTY: u64 = 10_000_000_000_000;
 
 #[ext_contract(ext_dao)]
 pub trait Dao {
@@ -13,6 +14,7 @@ pub trait Dao {
     fn get_policy(&self) -> Policy;
     fn get_proposal(&self, id: u64) -> ProposalOutput;
     fn get_available_amount(&self) -> U128;
+    fn get_bounty(&self, bounty_id: u64) -> BountyOutput;
 }
 
 #[near(serializers = [json])]
@@ -29,6 +31,31 @@ pub enum ProposalKind {
         receiver_id: AccountId,
         actions: Vec<ActionCall>,
     },
+    AddBounty {
+        bounty: Bounty,
+    },
+    BountyDone {
+        bounty_id: u64,
+        receiver_id: AccountId,
+    },
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bounty {
+    pub description: String,
+    pub token: String,
+    pub amount: U128,
+    pub times: u32,
+    pub max_deadline: U64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyOutput {
+    pub id: u64,
+    #[serde(flatten)]
+    pub bounty: Bounty,
 }
 
 #[near(serializers = [json, borsh])]
@@ -165,6 +192,84 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn add_bounty_payload_matches_sputnik_json() {
+        let input = ProposalInput {
+            description: "BountyBoard bounty issue 7".to_string(),
+            kind: ProposalKind::AddBounty {
+                bounty: Bounty {
+                    description: "bountyboard:7:42".to_string(),
+                    token: String::new(),
+                    amount: U128(2_000_000_000_000_000_000_000_000),
+                    times: 1,
+                    max_deadline: U64(30 * 24 * 60 * 60 * 1_000_000_000),
+                },
+            },
+        };
+
+        assert_eq!(
+            to_value(input).unwrap(),
+            json!({
+                "description": "BountyBoard bounty issue 7",
+                "kind": {
+                    "AddBounty": {
+                        "bounty": {
+                            "description": "bountyboard:7:42",
+                            "token": "",
+                            "amount": "2000000000000000000000000",
+                            "times": 1,
+                            "max_deadline": "2592000000000000"
+                        }
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn bounty_done_proposal_parses_sputnik_json() {
+        let value = json!({
+            "id": 9,
+            "proposer": "founder.bountyboard.testnet",
+            "description": "Bounty done",
+            "kind": {
+                "BountyDone": {
+                    "bounty_id": 4,
+                    "receiver_id": "contributor.testnet"
+                }
+            },
+            "status": "InProgress"
+        });
+
+        let output: ProposalOutput = near_sdk::serde_json::from_value(value).unwrap();
+        assert_eq!(output.id, 9);
+        assert_eq!(
+            output.proposal.kind,
+            ProposalKind::BountyDone {
+                bounty_id: 4,
+                receiver_id: "contributor.testnet".parse().unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn bounty_output_parses_flattened_sputnik_json() {
+        let value = json!({
+            "id": 4,
+            "description": "bountyboard:7:42",
+            "token": "",
+            "amount": "2000000000000000000000000",
+            "times": 1,
+            "max_deadline": "2592000000000000"
+        });
+
+        let output: BountyOutput = near_sdk::serde_json::from_value(value).unwrap();
+        assert_eq!(output.id, 4);
+        assert_eq!(output.bounty.description, "bountyboard:7:42");
+        assert_eq!(output.bounty.token, "");
+        assert_eq!(output.bounty.max_deadline, U64(2_592_000_000_000_000));
     }
 
     #[test]
