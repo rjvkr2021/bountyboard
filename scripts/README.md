@@ -67,6 +67,59 @@ bounty, and a higher `bounty_bond` raises the cost of griefing. A private
 researcher must link their GitHub identity before `approve_bounty_done` can
 release the payout.
 
+## Council promotion and removal
+
+A maintainer with enough tenure and approved bounties can call
+`request_council_promotion`. BountyBoard creates a Sputnik `AddMemberToRole`
+proposal for the `council` role and stores the proposal id; it does not vote.
+After the council approves it, anyone can call `sync_council_request(account)`
+to clear the active request. A rejected, expired, removed, or moved proposal
+also clears the active id, and the retry cooldown starts from the last proposal
+time.
+
+The council can also manage membership directly. The proposal JSON is:
+
+```json
+{
+  "description": "Promote alice.testnet to council",
+  "kind": {
+    "AddMemberToRole": {
+      "member_id": "alice.testnet",
+      "role": "council"
+    }
+  }
+}
+```
+
+```bash
+near call bounty-dao.bountyboard.testnet create_proposal \
+  '{"description":"Promote alice.testnet to council","kind":{"AddMemberToRole":{"member_id":"alice.testnet","role":"council"}}}' \
+  --accountId founder.bountyboard.testnet --deposit 1
+
+near call bounty-dao.bountyboard.testnet act_proposal \
+  '{"id":7,"action":"VoteApprove","memo":null}' \
+  --accountId founder.bountyboard.testnet
+```
+
+To remove a member, use the same flow with:
+
+```json
+{
+  "description": "Remove alice.testnet from council",
+  "kind": {
+    "RemoveMemberFromRole": {
+      "member_id": "alice.testnet",
+      "role": "council"
+    }
+  }
+}
+```
+
+Council membership changes use the reviewed `[1,2]` role threshold. The
+BountyBoard account may only add the `AddMemberToRole` proposal; it cannot vote
+on it or remove council members. The council `call` lane and S0 `AddBounty`
+proposals use the full-council `[1,1]` threshold.
+
 ## Other commands
 
 - `npm run dao:fetch` downloads and verifies the pinned Sputnik wasm only.

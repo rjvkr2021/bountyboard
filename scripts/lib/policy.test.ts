@@ -134,6 +134,32 @@ describe("policy invariants", () => {
     expect(bountyboard.permissions).not.toContain(permission);
   });
 
+  it("lets the bountyboard request council promotion without voting", () => {
+    expect(bountyboard.permissions).toContain("add_member_to_role:AddProposal");
+    expect(bountyboard.permissions).not.toContain("add_member_to_role:VoteApprove");
+    expect(bountyboard.permissions).not.toContain("add_member_to_role:*");
+  });
+
+  it("does not let the bountyboard remove council members", () => {
+    expect(
+      bountyboard.permissions.some((permission) =>
+        permission.startsWith("remove_member_from_role:"),
+      ),
+    ).toBe(false);
+  });
+
+  it("uses the reviewed council membership and call thresholds", () => {
+    expect(role(policy, "council").vote_policy.call?.threshold).toEqual([1, 1]);
+    expect(role(policy, "council").vote_policy.add_bounty?.threshold).toEqual([1, 1]);
+    expect(role(policy, "council").vote_policy.add_member_to_role?.threshold).toEqual([
+      1,
+      2,
+    ]);
+    expect(
+      role(policy, "council").vote_policy.remove_member_from_role?.threshold,
+    ).toEqual([1, 2]);
+  });
+
   it("never grants wildcard permissions", () => {
     for (const item of policy.roles) {
       expect(item.permissions).not.toContain("*:*");

@@ -323,6 +323,16 @@ pub struct Candidate {
 pub struct CouncilRequest {
     pub last_proposal_at: Timestamp,
     pub active_proposal_id: Option<u64>,
+    pub pending: bool,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CouncilRequestView {
+    pub account: AccountId,
+    pub active_proposal_id: Option<u64>,
+    pub last_request_at: Timestamp,
+    pub retry_at: Timestamp,
 }
 
 #[near(serializers = [json, borsh])]

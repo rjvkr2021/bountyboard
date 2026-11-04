@@ -38,6 +38,14 @@ pub enum ProposalKind {
         bounty_id: u64,
         receiver_id: AccountId,
     },
+    AddMemberToRole {
+        member_id: AccountId,
+        role: String,
+    },
+    RemoveMemberFromRole {
+        member_id: AccountId,
+        role: String,
+    },
 }
 
 #[near(serializers = [json, borsh])]
@@ -251,6 +259,49 @@ mod tests {
                 bounty_id: 4,
                 receiver_id: "contributor.testnet".parse().unwrap()
             }
+        );
+    }
+
+    #[test]
+    fn council_membership_kinds_match_sputnik_json() {
+        let add = ProposalInput {
+            description: "Promote alice to council".to_string(),
+            kind: ProposalKind::AddMemberToRole {
+                member_id: "alice.testnet".parse().unwrap(),
+                role: "council".to_string(),
+            },
+        };
+        assert_eq!(
+            to_value(add).unwrap(),
+            json!({
+                "description": "Promote alice to council",
+                "kind": {
+                    "AddMemberToRole": {
+                        "member_id": "alice.testnet",
+                        "role": "council"
+                    }
+                }
+            })
+        );
+
+        let remove = ProposalInput {
+            description: "Remove alice from council".to_string(),
+            kind: ProposalKind::RemoveMemberFromRole {
+                member_id: "alice.testnet".parse().unwrap(),
+                role: "council".to_string(),
+            },
+        };
+        assert_eq!(
+            to_value(remove).unwrap(),
+            json!({
+                "description": "Remove alice from council",
+                "kind": {
+                    "RemoveMemberFromRole": {
+                        "member_id": "alice.testnet",
+                        "role": "council"
+                    }
+                }
+            })
         );
     }
 

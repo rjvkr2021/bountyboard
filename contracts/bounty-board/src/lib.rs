@@ -23,12 +23,12 @@ use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
     Approval, ApprovalSource, BoardConfig, BootstrapState, BudgetView, CANDIDATE_COMPLETED,
-    CANDIDATE_POINTS, Candidate, CompletionKind, CouncilRequest, DAY_SECS, DEFAULT_DAILY_CAP_YOCTO,
-    DaoParams, GAS_FOR_PAYOUT, GAS_FOR_PAYOUT_CALLBACK, GAS_FOR_PAYOUT_TRANSFER_CALLBACK, Issue,
-    IssueId, IssueKind, IssueStatus, MAX_CLAIMANTS, MaintainerRecord, PayoutId, PayoutProof,
-    PayoutRecord, PayoutStatus, PendingPayout, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
-    S0_BOUNTY_MAX_DEADLINE, S0_BOUNTY_TIMES, S0State, S3_AUTO_APPROVE_MAX_YOCTO,
-    S3_AUTO_MIN_COMPLETED, Tier,
+    CANDIDATE_POINTS, Candidate, CompletionKind, CouncilRequest, CouncilRequestView, DAY_SECS,
+    DEFAULT_DAILY_CAP_YOCTO, DaoParams, GAS_FOR_PAYOUT, GAS_FOR_PAYOUT_CALLBACK,
+    GAS_FOR_PAYOUT_TRANSFER_CALLBACK, Issue, IssueId, IssueKind, IssueStatus, MAX_CLAIMANTS,
+    MaintainerRecord, PayoutId, PayoutProof, PayoutRecord, PayoutStatus, PendingPayout, PrivateRef,
+    REPO_ID, Repo, RepoId, Reputation, S0_BOUNTY_MAX_DEADLINE, S0_BOUNTY_TIMES, S0State,
+    S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
 };
 
 #[near_sdk::ext_contract(ext_self)]
@@ -45,6 +45,8 @@ pub trait Callbacks {
     fn on_bounty_done_proposal(&mut self, issue_id: IssueId, proposal_id: u64);
     fn on_bounty_done_voted(&mut self, issue_id: IssueId, proposal_id: u64);
     fn on_confirm_payout(&mut self, issue_id: IssueId);
+    fn on_council_proposal_created(&mut self, account: AccountId);
+    fn on_council_request_synced(&mut self, account: AccountId, proposal_id: u64);
 }
 
 #[near(contract_state)]
@@ -2025,6 +2027,161 @@ impl BountyBoard {
         Ok(())
     }
 
+    #[handle_result]
+    pub fn request_council_promotion(&mut self) -> Result<(), ContractError> {
+        let caller = env::predecessor_account_id();
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        let record = repo
+            .maintainers
+            .get(&caller)
+            .ok_or(ContractError::NotMaintainer)?;
+        let now = env::block_timestamp();
+        let tenure_ns = self
+            .council_promotion_min_tenure_secs
+            .saturating_mul(1_000_000_000);
+        if now.saturating_sub(record.since) < tenure_ns {
+            return Err(ContractError::InsufficientTenure);
+        }
+        if record.bounties_approved < self.council_promotion_min_approvals as u64 {
+            return Err(ContractError::InsufficientApprovals);
+        }
+
+        let mut request = self
+            .council_requests
+            .get(&caller)
+            .cloned()
+            .unwrap_or(CouncilRequest {
+                last_proposal_at: 0,
+                active_proposal_id: None,
+                pending: false,
+            });
+        if request.pending || request.active_proposal_id.is_some() {
+            return Err(ContractError::CouncilRequestActive);
+        }
+        let cooldown_ns = self
+            .council_promotion_delay_secs
+            .saturating_mul(1_000_000_000);
+        if request.last_proposal_at != 0
+            && request.last_proposal_at.saturating_add(cooldown_ns) > now
+        {
+            return Err(ContractError::CouncilCooldown);
+        }
+
+        request.pending = true;
+        self.council_requests.insert(caller.clone(), request);
+
+        let input = ProposalInput {
+            description: format!("BountyBoard council promotion for {caller}"),
+            kind: ProposalKind::AddMemberToRole {
+                member_id: caller.clone(),
+                role: self.council_role_name.clone(),
+            },
+        };
+        events::council_promotion_requested(caller.clone());
+        dao::ext_dao::ext(self.dao.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(self.dao_params.proposal_bond.0))
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_ADD_PROPOSAL))
+            .add_proposal(input)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_council_proposal_created(caller),
+            )
+            .detach();
+        Ok(())
+    }
+
+    #[private]
+    pub fn on_council_proposal_created(
+        &mut self,
+        account: AccountId,
+        #[callback_result] result: Result<u64, PromiseError>,
+    ) {
+        let Some(mut request) = self.council_requests.get(&account).cloned() else {
+            return;
+        };
+        request.pending = false;
+        match result {
+            Ok(proposal_id) => {
+                let now = env::block_timestamp();
+                request.active_proposal_id = Some(proposal_id);
+                request.last_proposal_at = now;
+                self.council_requests.insert(account.clone(), request);
+                if let Some(repo) = self.repos.get_mut(&REPO_ID)
+                    && let Some(record) = repo.maintainers.get_mut(&account)
+                {
+                    record.last_council_request_at = now;
+                }
+            }
+            Err(_) => {
+                self.council_requests.insert(account, request);
+            }
+        }
+    }
+
+    #[handle_result]
+    pub fn sync_council_request(&mut self, account: AccountId) -> Result<Promise, ContractError> {
+        let request = self
+            .council_requests
+            .get(&account)
+            .cloned()
+            .ok_or(ContractError::CouncilRequestNotFound)?;
+        let proposal_id = request
+            .active_proposal_id
+            .ok_or(ContractError::CouncilRequestNotFound)?;
+
+        Ok(dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_council_request_synced(account, proposal_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_council_request_synced(
+        &mut self,
+        account: AccountId,
+        proposal_id: u64,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) {
+        let Some(mut request) = self.council_requests.get(&account).cloned() else {
+            return;
+        };
+        if request.active_proposal_id != Some(proposal_id) {
+            return;
+        }
+        let proposal = match result {
+            Ok(proposal) => proposal,
+            Err(_) => return,
+        };
+        if proposal.id != proposal_id {
+            return;
+        }
+        match proposal.proposal.status {
+            ProposalStatus::Approved => {
+                request.active_proposal_id = None;
+                request.pending = false;
+                self.council_requests.insert(account.clone(), request);
+                events::council_promotion_approved(account, proposal_id);
+            }
+            ProposalStatus::Rejected
+            | ProposalStatus::Removed
+            | ProposalStatus::Expired
+            | ProposalStatus::Moved => {
+                request.active_proposal_id = None;
+                request.pending = false;
+                self.council_requests.insert(account, request);
+            }
+            ProposalStatus::InProgress => {}
+        }
+    }
+
     pub fn get_candidates(&self, from: u32, limit: u32) -> Vec<Candidate> {
         paginate(
             self.candidates
@@ -2035,11 +2192,23 @@ impl BountyBoard {
         )
     }
 
-    pub fn get_council_requests(&self, from: u32, limit: u32) -> Vec<CouncilRequest> {
+    pub fn get_council_requests(&self, from: u32, limit: u32) -> Vec<CouncilRequestView> {
+        let delay = self
+            .council_promotion_delay_secs
+            .saturating_mul(1_000_000_000);
         paginate(
             self.council_requests
                 .iter()
-                .map(|(_, request)| request.clone()),
+                .map(|(account, request)| CouncilRequestView {
+                    account: account.clone(),
+                    active_proposal_id: request.active_proposal_id,
+                    last_request_at: request.last_proposal_at,
+                    retry_at: if request.last_proposal_at == 0 {
+                        0
+                    } else {
+                        request.last_proposal_at.saturating_add(delay)
+                    },
+                }),
             from,
             limit,
         )
@@ -2124,7 +2293,7 @@ mod tests {
     use crate::dao::{Proposal, ProposalOutput, ProposalStatus};
     use crate::types::{
         Approval, IssueKind, IssueStatus, MergeProof, MergeSource, ONE_NEAR, PayoutProof,
-        PayoutStatus, SecurityDisclosure, Tier,
+        PayoutStatus, SecurityDisclosure, Tier, WEEK_SECS,
     };
     use near_sdk::test_utils::{VMContextBuilder, accounts, get_logs};
     use near_sdk::testing_env;
@@ -2650,6 +2819,7 @@ mod tests {
             CouncilRequest {
                 last_proposal_at: 1,
                 active_proposal_id: None,
+                pending: false,
             },
         );
 
@@ -3984,6 +4154,356 @@ mod tests {
         );
         at_time(accounts(1), day_ns);
         assert_eq!(cap.create_bounty(3, Tier::S2, U128(10), None), Ok(1));
+    }
+
+    fn eligible_maintainer_contract() -> BountyBoard {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        let record = contract
+            .repos
+            .get_mut(&REPO_ID)
+            .unwrap()
+            .maintainers
+            .get_mut(&accounts(1))
+            .unwrap();
+        record.since = WEEK_SECS * 1_000_000_000;
+        record.bounties_approved = 3;
+        contract
+    }
+
+    #[test]
+    fn config_view_exposes_council_promotion_settings() {
+        let contract = BountyBoard::new(accounts(0), None);
+        let config = contract.get_config();
+        assert_eq!(config.bootstrap_until_maintainers, 3);
+        assert_eq!(config.maintainer_challenge_secs, WEEK_SECS);
+        assert_eq!(config.council_promotion_min_tenure_secs, WEEK_SECS);
+        assert_eq!(config.council_promotion_delay_secs, WEEK_SECS);
+        assert_eq!(config.council_promotion_min_approvals, 3);
+        assert_eq!(config.council_role_name, "council");
+
+        let demo = BountyBoard::new(
+            accounts(0),
+            Some(BoardConfig {
+                council_promotion_min_tenure_secs: 60,
+                council_promotion_delay_secs: 90,
+                council_promotion_min_approvals: 1,
+                ..Default::default()
+            }),
+        );
+        let config = demo.get_config();
+        assert_eq!(config.council_promotion_min_tenure_secs, 60);
+        assert_eq!(config.council_promotion_delay_secs, 90);
+        assert_eq!(config.council_promotion_min_approvals, 1);
+    }
+
+    #[test]
+    fn request_council_promotion_enforces_eligibility() {
+        let week = WEEK_SECS * 1_000_000_000;
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+
+        at_time(accounts(2), week * 3);
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::NotMaintainer)
+        );
+
+        contract
+            .repos
+            .get_mut(&REPO_ID)
+            .unwrap()
+            .maintainers
+            .get_mut(&accounts(1))
+            .unwrap()
+            .since = week;
+        at_time(accounts(1), week * 2 - 1);
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::InsufficientTenure)
+        );
+
+        contract
+            .repos
+            .get_mut(&REPO_ID)
+            .unwrap()
+            .maintainers
+            .get_mut(&accounts(1))
+            .unwrap()
+            .bounties_approved = 2;
+        at_time(accounts(1), week * 2);
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::InsufficientApprovals)
+        );
+
+        contract
+            .repos
+            .get_mut(&REPO_ID)
+            .unwrap()
+            .maintainers
+            .get_mut(&accounts(1))
+            .unwrap()
+            .bounties_approved = 3;
+        assert_eq!(contract.request_council_promotion(), Ok(()));
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::CouncilRequestActive)
+        );
+        assert!(contract.council_requests.get(&accounts(1)).unwrap().pending);
+        assert_eq!(count_event("council_promotion_requested"), 1);
+    }
+
+    #[test]
+    fn council_proposal_callback_stores_active_request() {
+        let week = WEEK_SECS * 1_000_000_000;
+        let mut contract = eligible_maintainer_contract();
+        at_time(accounts(1), week * 2);
+        contract.request_council_promotion().unwrap();
+        contract.on_council_proposal_created(accounts(1), Ok(7));
+
+        let request = contract.council_requests.get(&accounts(1)).unwrap().clone();
+        assert_eq!(request.active_proposal_id, Some(7));
+        assert!(!request.pending);
+        assert_eq!(request.last_proposal_at, week * 2);
+        assert_eq!(
+            contract
+                .get_maintainers()
+                .get(&accounts(1))
+                .unwrap()
+                .last_council_request_at,
+            week * 2
+        );
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::CouncilRequestActive)
+        );
+    }
+
+    #[test]
+    fn council_proposal_failure_allows_immediate_retry() {
+        let week = WEEK_SECS * 1_000_000_000;
+        let mut contract = eligible_maintainer_contract();
+        at_time(accounts(1), week * 2);
+        contract.request_council_promotion().unwrap();
+        contract.on_council_proposal_created(accounts(1), Err(PromiseError::Failed));
+
+        let request = contract.council_requests.get(&accounts(1)).unwrap().clone();
+        assert!(!request.pending);
+        assert!(request.active_proposal_id.is_none());
+        assert_eq!(request.last_proposal_at, 0);
+        assert_eq!(contract.request_council_promotion(), Ok(()));
+    }
+
+    #[test]
+    fn council_retry_cooldown_and_sync_statuses() {
+        let week = WEEK_SECS * 1_000_000_000;
+        let mut contract = eligible_maintainer_contract();
+        at_time(accounts(1), week * 2);
+        contract.request_council_promotion().unwrap();
+        contract.on_council_proposal_created(accounts(1), Ok(7));
+
+        contract.on_council_request_synced(
+            accounts(1),
+            7,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::InProgress,
+                    kind: ProposalKind::AddMemberToRole {
+                        member_id: accounts(1),
+                        role: "council".to_string(),
+                    },
+                },
+            }),
+        );
+        assert_eq!(
+            contract
+                .council_requests
+                .get(&accounts(1))
+                .unwrap()
+                .active_proposal_id,
+            Some(7)
+        );
+
+        contract.on_council_request_synced(
+            accounts(1),
+            7,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::Rejected,
+                    kind: ProposalKind::AddMemberToRole {
+                        member_id: accounts(1),
+                        role: "council".to_string(),
+                    },
+                },
+            }),
+        );
+        let request = contract.council_requests.get(&accounts(1)).unwrap().clone();
+        assert!(request.active_proposal_id.is_none());
+        assert_eq!(request.last_proposal_at, week * 2);
+        assert_eq!(
+            contract.request_council_promotion(),
+            Err(ContractError::CouncilCooldown)
+        );
+
+        at_time(accounts(1), week * 3);
+        assert_eq!(contract.request_council_promotion(), Ok(()));
+        contract.on_council_proposal_created(accounts(1), Ok(8));
+        contract.on_council_request_synced(
+            accounts(1),
+            8,
+            Ok(ProposalOutput {
+                id: 8,
+                proposal: crate::dao::Proposal {
+                    status: ProposalStatus::Approved,
+                    kind: ProposalKind::AddMemberToRole {
+                        member_id: accounts(1),
+                        role: "council".to_string(),
+                    },
+                },
+            }),
+        );
+        assert!(
+            !contract
+                .council_requests
+                .get(&accounts(1))
+                .unwrap()
+                .active_proposal_id
+                .is_some()
+        );
+        assert_eq!(count_event("council_promotion_approved"), 1);
+        assert!(matches!(
+            contract.sync_council_request(accounts(1)),
+            Err(ContractError::CouncilRequestNotFound)
+        ));
+    }
+
+    #[test]
+    fn sync_clears_every_terminal_failure_status() {
+        let week = WEEK_SECS * 1_000_000_000;
+        for (status, account) in [
+            (ProposalStatus::Rejected, accounts(1)),
+            (ProposalStatus::Removed, accounts(2)),
+            (ProposalStatus::Expired, accounts(3)),
+            (ProposalStatus::Moved, accounts(4)),
+        ] {
+            let mut contract = contract_with_repo(vec![account.clone()], 100, 25);
+            let record = contract
+                .repos
+                .get_mut(&REPO_ID)
+                .unwrap()
+                .maintainers
+                .get_mut(&account)
+                .unwrap();
+            record.since = week;
+            record.bounties_approved = 3;
+            at_time(account.clone(), week * 2);
+            contract.request_council_promotion().unwrap();
+            contract.on_council_proposal_created(account.clone(), Ok(7));
+            contract.on_council_request_synced(
+                account.clone(),
+                7,
+                Ok(ProposalOutput {
+                    id: 7,
+                    proposal: Proposal {
+                        status,
+                        kind: ProposalKind::AddMemberToRole {
+                            member_id: account.clone(),
+                            role: "council".to_string(),
+                        },
+                    },
+                }),
+            );
+            let request = contract.council_requests.get(&account).unwrap();
+            assert!(request.active_proposal_id.is_none(), "{status:?}");
+            assert_eq!(request.last_proposal_at, week * 2, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn sync_failure_and_mismatched_proposal_keep_active_request() {
+        let week = WEEK_SECS * 1_000_000_000;
+        let mut contract = eligible_maintainer_contract();
+        at_time(accounts(1), week * 2);
+        contract.request_council_promotion().unwrap();
+        contract.on_council_proposal_created(accounts(1), Ok(7));
+
+        contract.on_council_request_synced(accounts(1), 7, Err(PromiseError::Failed));
+        assert_eq!(
+            contract
+                .council_requests
+                .get(&accounts(1))
+                .unwrap()
+                .active_proposal_id,
+            Some(7)
+        );
+
+        contract.on_council_request_synced(
+            accounts(1),
+            7,
+            Ok(ProposalOutput {
+                id: 8,
+                proposal: Proposal {
+                    status: ProposalStatus::Rejected,
+                    kind: ProposalKind::AddMemberToRole {
+                        member_id: accounts(1),
+                        role: "council".to_string(),
+                    },
+                },
+            }),
+        );
+        assert_eq!(
+            contract
+                .council_requests
+                .get(&accounts(1))
+                .unwrap()
+                .active_proposal_id,
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn council_request_view_reports_retry_time() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.council_requests.insert(
+            accounts(1),
+            CouncilRequest {
+                last_proposal_at: 100,
+                active_proposal_id: Some(7),
+                pending: false,
+            },
+        );
+
+        let view = &contract.get_council_requests(0, 10)[0];
+        assert_eq!(view.account, accounts(1));
+        assert_eq!(view.active_proposal_id, Some(7));
+        assert_eq!(view.last_request_at, 100);
+        assert_eq!(view.retry_at, 100 + WEEK_SECS * 1_000_000_000);
+        assert!(contract.get_council_requests(1, 10).is_empty());
+    }
+
+    #[test]
+    fn private_approvals_count_toward_promotion_only_when_unconflicted() {
+        let mut contract = contract_with_repo(vec![accounts(1), accounts(5)], 100, 25);
+        contract.identities.insert("bob".to_string(), accounts(5));
+        let mut issue = sample_issue(IssueKind::PrivateSecurity, 9);
+        issue.tier = Tier::S2;
+        issue.security = Some(SecurityDisclosure {
+            ghsa_id: "GHSA-aaaa-bbbb-cccc".to_string(),
+            advisory_url: "https://github.com/advisories/GHSA-aaaa-bbbb-cccc".to_string(),
+            researcher_github: "bob".to_string(),
+            disclosed_at: 0,
+        });
+        issue.approvals = vec![
+            maintainer_approval(accounts(5)),
+            maintainer_approval(accounts(1)),
+        ];
+
+        contract.count_approved_bounties(&issue);
+
+        let maintainers = contract.get_maintainers();
+        assert_eq!(maintainers.get(&accounts(5)).unwrap().bounties_approved, 0);
+        assert_eq!(maintainers.get(&accounts(1)).unwrap().bounties_approved, 1);
     }
 
     fn count_event(event: &str) -> usize {

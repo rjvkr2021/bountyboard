@@ -178,6 +178,19 @@ pub struct MaintainerRemoved {
     pub account: AccountId,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CouncilPromotionRequested {
+    pub account: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CouncilPromotionApproved {
+    pub account: AccountId,
+    pub proposal_id: u64,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -246,6 +259,23 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             issue_id,
             maintainer,
             released: U128(released),
+        },
+    );
+}
+
+pub fn council_promotion_requested(account: AccountId) {
+    emit(
+        "council_promotion_requested",
+        &CouncilPromotionRequested { account },
+    );
+}
+
+pub fn council_promotion_approved(account: AccountId, proposal_id: u64) {
+    emit(
+        "council_promotion_approved",
+        &CouncilPromotionApproved {
+            account,
+            proposal_id,
         },
     );
 }

@@ -40,6 +40,10 @@ pub enum ContractError {
     ChallengeActive,
     AlreadyMaintainer,
     LastMaintainer,
+    InsufficientTenure,
+    CouncilRequestNotFound,
+    CouncilRequestActive,
+    CouncilCooldown,
     S0NotEnabled,
     InvalidAmount,
     InsufficientBond,
@@ -92,6 +96,12 @@ impl std::fmt::Display for ContractError {
             ContractError::ChallengeActive => "candidate challenge window is still active",
             ContractError::AlreadyMaintainer => "account is already a maintainer",
             ContractError::LastMaintainer => "cannot remove the last maintainer",
+            ContractError::InsufficientTenure => {
+                "maintainer tenure is below the council promotion minimum"
+            }
+            ContractError::CouncilRequestNotFound => "no active council promotion request",
+            ContractError::CouncilRequestActive => "a council promotion request is already active",
+            ContractError::CouncilCooldown => "council promotion retry cooldown is active",
             ContractError::S0NotEnabled => "S0 bounties are not enabled yet",
             ContractError::InvalidAmount => "invalid bounty amount",
             ContractError::InsufficientBond => {
