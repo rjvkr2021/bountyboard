@@ -292,6 +292,36 @@ impl BountyBoard {
     }
 
     #[handle_result]
+    pub fn council_approve(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+        let mut issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?
+            .clone();
+        if issue.status != IssueStatus::Escalated {
+            return Err(ContractError::InvalidState);
+        }
+
+        let status = approved_status(&issue);
+        issue.approvals.push(Approval {
+            approver: env::predecessor_account_id(),
+            source: ApprovalSource::Council,
+            at: env::block_timestamp(),
+        });
+        issue.status = status;
+        self.issues.insert(issue_id, issue);
+        events::bounty_approved(
+            issue_id,
+            env::predecessor_account_id(),
+            ApprovalSource::Council,
+            status,
+        );
+
+        Ok(())
+    }
+
+    #[handle_result]
     pub fn claim(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
         let caller = env::predecessor_account_id();
         let issue = self
@@ -1267,6 +1297,66 @@ mod tests {
             contract.issues.get(&s1).unwrap().status,
             IssueStatus::PendingApproval
         );
+    }
+
+    #[test]
+    fn council_approve_is_dao_only_and_only_for_escalated_issues() {
+        let mut contract = normal_mode_contract();
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.status = IssueStatus::Escalated;
+        contract.issues.insert(1, issue);
+        let mut pending = sample_issue(IssueKind::PublicIssue, 2);
+        pending.status = IssueStatus::PendingApproval;
+        contract.issues.insert(2, pending);
+
+        set_predecessor(accounts(1));
+        assert_eq!(contract.council_approve(1), Err(ContractError::NotDao));
+        set_predecessor(accounts(0));
+        assert_eq!(
+            contract.council_approve(2),
+            Err(ContractError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn council_approve_sets_status_without_counting_as_maintainer_approval() {
+        let mut contract = normal_mode_contract();
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.status = IssueStatus::Escalated;
+        issue.approvals = vec![Approval {
+            approver: accounts(3),
+            source: ApprovalSource::Maintainer,
+            at: 0,
+        }];
+        contract.issues.insert(1, issue);
+        set_predecessor(accounts(0));
+
+        contract.council_approve(1).unwrap();
+
+        let issue = contract.issues.get(&1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Approved);
+        assert_eq!(issue.approvals.len(), 2);
+        assert_eq!(contract.unconflicted_approvals(issue), 1);
+    }
+
+    #[test]
+    fn council_approve_restores_merged_after_post_merge_escalation() {
+        let mut contract = normal_mode_contract();
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.status = IssueStatus::Escalated;
+        issue.merge_proof = Some(crate::types::MergeProof {
+            pr_number: 5,
+            pr_author: "alice".to_string(),
+            commit: "abc".to_string(),
+            source: crate::types::MergeSource::Manual,
+            merged_at: 1,
+        });
+        contract.issues.insert(1, issue);
+        set_predecessor(accounts(0));
+
+        contract.council_approve(1).unwrap();
+
+        assert_eq!(contract.issues.get(&1).unwrap().status, IssueStatus::Merged);
     }
 
     #[test]
