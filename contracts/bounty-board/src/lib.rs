@@ -515,6 +515,10 @@ impl BountyBoard {
         Ok(())
     }
 
+    pub fn get_dao_params(&self) -> DaoParams {
+        self.dao_params.clone()
+    }
+
     pub fn get_config(&self) -> BoardConfig {
         BoardConfig {
             bootstrap_until_maintainers: self.bootstrap_until_maintainers,
@@ -1041,6 +1045,22 @@ mod tests {
         assert!(!json.contains("ghsa_id"));
         assert!(!json.contains("advisory_url"));
         assert!(!json.contains("researcher_github"));
+    }
+
+    #[test]
+    fn dao_params_start_at_zero_and_return_stored_values() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        assert_eq!(contract.get_dao_params(), DaoParams::default());
+
+        contract.dao_params = DaoParams {
+            proposal_bond: U128(ONE_NEAR),
+            bounty_bond: U128(2 * ONE_NEAR),
+            proposal_period: 10,
+            bounty_forgiveness_period: 20,
+            synced_at: 30,
+        };
+        assert_eq!(contract.get_dao_params(), contract.dao_params);
     }
 
     #[test]
