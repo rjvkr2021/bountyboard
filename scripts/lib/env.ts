@@ -50,8 +50,20 @@ export const EnvSchema = z
 
 export type Env = z.infer<typeof EnvSchema>;
 
+function withoutEmptyValues(
+  source: NodeJS.ProcessEnv | Record<string, unknown>,
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== "") {
+      normalized[key] = value;
+    }
+  }
+  return normalized;
+}
+
 export function parseEnv(source: NodeJS.ProcessEnv | Record<string, unknown>): Env {
-  const result = EnvSchema.safeParse(source);
+  const result = EnvSchema.safeParse(withoutEmptyValues(source));
   if (!result.success) {
     const details = result.error.issues
       .map((issue) => `  - ${issue.path.join(".") || "(root)"}: ${issue.message}`)

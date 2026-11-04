@@ -20,6 +20,19 @@ describe("parseEnv", () => {
     expect(env.DAO_ACCOUNT).toBe("bounty-dao.testnet");
   });
 
+  it("treats empty values as unset", () => {
+    const env = parseEnv({
+      ...base,
+      TREASURY_BUDGET_NEAR: "",
+      NEAR_RPC_URL: "",
+      DEPLOYER_PRIVATE_KEY: "",
+    });
+
+    expect(env.TREASURY_BUDGET_NEAR).toBe(100);
+    expect(env.NEAR_RPC_URL).toBeUndefined();
+    expect(env.DEPLOYER_PRIVATE_KEY).toBeUndefined();
+  });
+
   it("fails when a required account is missing", () => {
     const { DAO_ACCOUNT: _dao, ...missing } = base;
 
