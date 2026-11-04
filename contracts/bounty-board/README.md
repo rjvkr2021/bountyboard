@@ -1,63 +1,50 @@
-# Basic Auction Contract 
+# BountyBoard contract
 
-This directory contains a Rust contract that is used as part of the [Basic Auction Tutorial](https://docs.near.org/tutorials/auction/basic-auction).
+Rust (near-sdk v5) contract for the BountyBoard project. See the repository root
+`README.md` and `IMPLEMENTATION.md` for the product and roadmap.
 
-The contract is a simple auction where you can place bids, view the highest bid, and claim the tokens at the end of the auction.
-
-This repo showcases the basic anatomy of a smart contract application on NEAR Protocol that showcases how to store data in a contract, how to update the state, and then how to read it.
-There are also unit tests, integration tests, and CI/CD pipelines preconfigured for your reference.
-
----
-
-## How to Build Locally?
-
-Install [`cargo-near`](https://github.com/near/cargo-near) and run:
+## Build
 
 ```bash
-cargo near build
+cd contracts/bounty-board
+cargo near build non-reproducible-wasm
 ```
 
-## How to Test Locally?
+The Wasm artifact is written to `target/near/bounty_board.wasm`. Use
+`cargo near build reproducible-wasm` only from a clean, committed tree when a
+reproducible artifact is required.
+
+## Test
 
 ```bash
+cd contracts/bounty-board
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-## How to Deploy?
+## Deploy
 
-Deployment is automated with GitHub Actions CI/CD pipeline.
-To deploy manually, install [`cargo-near`](https://github.com/near/cargo-near) and run:
-
-If you deploy for debugging purposes:
+Testnet only for this project. Never deploy to mainnet without explicit human approval.
 
 ```bash
-cargo near deploy build-non-reproducible-wasm
+near contract deploy <CONTRACT_ACCOUNT_ID> use-file target/near/bounty_board.wasm \
+  with-init-call new json-args '{"dao":"<DAO_ACCOUNT_ID>"}' \
+  prepaid-gas '30 Tgas' attached-deposit '0 NEAR'
 ```
 
-If you deploy production ready smart contract:
+Then verify initialization:
 
 ```bash
-cargo near deploy build-reproducible-wasm
+near contract call-function as-read-only <CONTRACT_ACCOUNT_ID> get_dao json-args '{}' \
+  network-config testnet now
 ```
 
-## Initialize the contract
+Re-deploying changes state layout requires an explicit migration. v1 exposes no
+self-upgrade method.
 
-```bash
-# on Linux / Windows WSL
-TWO_MINUTES_FROM_NOW=$(date -d '+2 minutes' +%s000000000)
-# on MacOS
-TWO_MINUTES_FROM_NOW=$(date -v+2M +%s000000000)
+## Keys
 
-near contract call-function as-transaction '<CONTRACT_ACCOUNT_ID>' init json-args '{"end_time": "'$TWO_MINUTES_FROM_NOW'", "auctioneer": "<AUCTIONEER_ACCOUNT_ID>"}' prepaid-gas '30.0 Tgas' attached-deposit '0 NEAR'
-```
-
-## Useful Links
-
-- [cargo-near](https://github.com/near/cargo-near) - NEAR smart contract development toolkit for Rust
-- [near CLI](https://near.cli.rs) - Interact with NEAR blockchain from command line
-- [NEAR Rust SDK Documentation](https://docs.near.org/sdk/rust/introduction)
-- [NEAR Documentation](https://docs.near.org)
-- [NEAR StackOverflow](https://stackoverflow.com/questions/tagged/nearprotocol)
-- [NEAR Discord](https://near.chat)
-- [NEAR Telegram Developers Community Group](https://t.me/neardev)
-- NEAR DevHub: [Telegram](https://t.me/neardevhub), [Twitter](https://twitter.com/neardevhub)
+Do not commit keys, seed phrases, `.env` files, or `.near-credentials/`. Use the
+deployer account from a local key store or environment variables that are never
+checked in.
