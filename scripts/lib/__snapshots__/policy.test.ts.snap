@@ -1,0 +1,112 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildPolicy > matches the reviewed snapshot 1`] = `
+{
+  "bounty_bond": "1000000000000000000000000",
+  "bounty_forgiveness_period": "86400000000000",
+  "default_vote_policy": {
+    "quorum": "0",
+    "threshold": [
+      1,
+      1,
+    ],
+    "weight_kind": "RoleWeight",
+  },
+  "proposal_bond": "1000000000000000000000000",
+  "proposal_period": "604800000000000",
+  "roles": [
+    {
+      "kind": {
+        "Group": [
+          "founder.testnet",
+        ],
+      },
+      "name": "council",
+      "permissions": [
+        "add_bounty:*",
+        "bounty_done:VoteApprove",
+        "call:*",
+        "transfer:*",
+        "add_member_to_role:*",
+        "remove_member_from_role:*",
+        "config:*",
+        "policy:*",
+        "policy_add_or_update_role:*",
+        "policy_remove_role:*",
+        "policy_update_default_vote_policy:*",
+        "policy_update_parameters:*",
+      ],
+      "vote_policy": {
+        "add_bounty": {
+          "quorum": "0",
+          "threshold": [
+            1,
+            1,
+          ],
+          "weight_kind": "RoleWeight",
+        },
+        "add_member_to_role": {
+          "quorum": "0",
+          "threshold": [
+            1,
+            2,
+          ],
+          "weight_kind": "RoleWeight",
+        },
+        "call": {
+          "quorum": "0",
+          "threshold": [
+            1,
+            1,
+          ],
+          "weight_kind": "RoleWeight",
+        },
+        "remove_member_from_role": {
+          "quorum": "0",
+          "threshold": [
+            1,
+            2,
+          ],
+          "weight_kind": "RoleWeight",
+        },
+      },
+    },
+    {
+      "kind": {
+        "Group": [
+          "bountyboard.bounty-dao.testnet",
+        ],
+      },
+      "name": "bountyboard",
+      "permissions": [
+        "add_bounty:AddProposal",
+        "bounty_done:VoteApprove",
+        "call:AddProposal",
+        "call:VoteApprove",
+        "call:Finalize",
+        "add_member_to_role:AddProposal",
+      ],
+      "vote_policy": {
+        "bounty_done": {
+          "quorum": "0",
+          "threshold": "1",
+          "weight_kind": "RoleWeight",
+        },
+        "call": {
+          "quorum": "0",
+          "threshold": "1",
+          "weight_kind": "RoleWeight",
+        },
+      },
+    },
+    {
+      "kind": "Everyone",
+      "name": "all",
+      "permissions": [
+        "bounty_done:AddProposal",
+      ],
+      "vote_policy": {},
+    },
+  ],
+}
+`;
