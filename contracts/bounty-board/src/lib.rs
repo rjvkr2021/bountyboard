@@ -1,6 +1,7 @@
 use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{AccountId, PanicOnDefault, near};
 
+pub mod access;
 pub mod errors;
 pub mod state;
 pub mod types;
