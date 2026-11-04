@@ -55,7 +55,7 @@ describe("parseEnv", () => {
 describe("rpcUrl", () => {
   it("defaults per network", () => {
     const env = parseEnv(base);
-    expect(rpcUrl(env)).toBe("https://rpc.testnet.near.org");
+    expect(rpcUrl(env)).toBe("https://rpc.testnet.fastnear.com");
 
     const localnet = parseEnv({ ...base, NEAR_NETWORK: "localnet" });
     expect(rpcUrl(localnet)).toBe("http://127.0.0.1:3030");

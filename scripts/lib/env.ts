@@ -82,7 +82,7 @@ export function rpcUrl(env: Env): string {
   if (env.NEAR_NETWORK === "localnet") {
     return "http://127.0.0.1:3030";
   }
-  return `https://rpc.${env.NEAR_NETWORK}.near.org`;
+  return `https://rpc.${env.NEAR_NETWORK}.fastnear.com`;
 }
 
 function maskSecret(value: string | undefined): string {
