@@ -43,6 +43,13 @@ pub struct BountyCreated {
     pub status: IssueStatus,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyClaimed {
+    pub issue_id: IssueId,
+    pub claimant: AccountId,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -98,6 +105,10 @@ pub fn repo_budget_set(repo_id: RepoId, budget: u128, committed: u128) {
 
 pub fn repo_paused(repo_id: RepoId, paused: bool) {
     emit("repo_paused", &RepoPaused { repo_id, paused });
+}
+
+pub fn bounty_claimed(issue_id: IssueId, claimant: AccountId) {
+    emit("bounty_claimed", &BountyClaimed { issue_id, claimant });
 }
 
 #[allow(clippy::too_many_arguments)]

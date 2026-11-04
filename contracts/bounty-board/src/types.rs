@@ -13,6 +13,7 @@ pub const REPO_ID: RepoId = 0;
 pub const ONE_NEAR: u128 = 1_000_000_000_000_000_000_000_000;
 pub const S3_AUTO_APPROVE_MAX_YOCTO: u128 = 25 * ONE_NEAR;
 pub const S3_AUTO_MIN_COMPLETED: u64 = 3;
+pub const MAX_CLAIMANTS: usize = 32;
 pub const DEFAULT_DAILY_CAP_YOCTO: u128 = 25 * ONE_NEAR;
 pub const DAY_SECS: u64 = 86_400;
 pub const WEEK_SECS: u64 = 7 * DAY_SECS;

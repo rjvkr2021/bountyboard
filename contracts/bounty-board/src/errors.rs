@@ -16,6 +16,7 @@ pub enum ContractError {
     DuplicateIssueNumber,
     InvalidPrivateRef,
     DuplicatePrivateRef,
+    ClaimantLimitReached,
     WrongIssueKind,
     PrivateSecurityNoClaims,
     SecurityNotDisclosed,
@@ -53,6 +54,7 @@ impl std::fmt::Display for ContractError {
                 "private reference must be 64 lowercase hex characters"
             }
             ContractError::DuplicatePrivateRef => "private reference already registered",
+            ContractError::ClaimantLimitReached => "claimant list is full",
             ContractError::WrongIssueKind => "wrong issue kind for this operation",
             ContractError::PrivateSecurityNoClaims => {
                 "private security bounties do not accept public claims"

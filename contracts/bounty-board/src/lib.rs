@@ -16,8 +16,8 @@ use crate::state::StorageKey;
 use crate::types::{
     Approval, ApprovalSource, BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest,
     DAY_SECS, DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue, IssueId, IssueKind, IssueStatus,
-    MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
-    S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
+    MAX_CLAIMANTS, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId,
+    Reputation, S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
 };
 
 #[near(contract_state)]
@@ -186,6 +186,32 @@ impl BountyBoard {
         );
 
         Ok(issue_id)
+    }
+
+    #[handle_result]
+    pub fn claim(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
+        let caller = env::predecessor_account_id();
+        let issue = self
+            .issues
+            .get_mut(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?;
+
+        if issue.kind != IssueKind::PublicIssue {
+            return Err(ContractError::PrivateSecurityNoClaims);
+        }
+        if matches!(issue.status, IssueStatus::Paid | IssueStatus::Cancelled) {
+            return Err(ContractError::InvalidState);
+        }
+        if issue.claimants.contains(&caller) {
+            return Ok(());
+        }
+        if issue.claimants.len() >= MAX_CLAIMANTS {
+            return Err(ContractError::ClaimantLimitReached);
+        }
+
+        issue.claimants.push(caller.clone());
+        events::bounty_claimed(issue_id, caller);
+        Ok(())
     }
 
     #[handle_result]
@@ -848,6 +874,61 @@ mod tests {
         assert_eq!(contract.get_candidates(1, 10).len(), 0);
         assert_eq!(contract.get_council_requests(0, 10).len(), 1);
         assert_eq!(contract.get_council_requests(1, 10).len(), 0);
+    }
+
+    #[test]
+    fn claim_is_non_exclusive_and_idempotent() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract
+            .issues
+            .insert(1, sample_issue(IssueKind::PublicIssue, 7));
+
+        set_predecessor(accounts(1));
+        contract.claim(1).unwrap();
+        contract.claim(1).unwrap();
+        set_predecessor(accounts(2));
+        contract.claim(1).unwrap();
+
+        assert_eq!(
+            contract.issues.get(&1).unwrap().claimants,
+            vec![accounts(1), accounts(2)]
+        );
+    }
+
+    #[test]
+    fn claim_rejects_closed_and_private_issues() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let mut paid = sample_issue(IssueKind::PublicIssue, 1);
+        paid.status = IssueStatus::Paid;
+        let mut cancelled = sample_issue(IssueKind::PublicIssue, 2);
+        cancelled.status = IssueStatus::Cancelled;
+        contract.issues.insert(1, paid);
+        contract.issues.insert(2, cancelled);
+        contract
+            .issues
+            .insert(3, sample_issue(IssueKind::PrivateSecurity, 3));
+        set_predecessor(accounts(1));
+
+        assert_eq!(contract.claim(1), Err(ContractError::InvalidState));
+        assert_eq!(contract.claim(2), Err(ContractError::InvalidState));
+        assert_eq!(
+            contract.claim(3),
+            Err(ContractError::PrivateSecurityNoClaims)
+        );
+        assert_eq!(contract.claim(99), Err(ContractError::IssueNotFound));
+    }
+
+    #[test]
+    fn claim_list_is_capped() {
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.claimants = (0..MAX_CLAIMANTS)
+            .map(|index| format!("claimant{index}.near").parse().unwrap())
+            .collect();
+        contract.issues.insert(1, issue);
+        set_predecessor(accounts(1));
+
+        assert_eq!(contract.claim(1), Err(ContractError::ClaimantLimitReached));
     }
 
     #[test]
