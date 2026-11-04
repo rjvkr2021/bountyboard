@@ -137,7 +137,7 @@ impl BountyBoard {
 
         let issue_id = self.next_issue_id;
         self.next_issue_id += 1;
-        let issue = Issue {
+        let mut issue = Issue {
             repo_id: REPO_ID,
             kind: IssueKind::PublicIssue,
             issue_number: Some(issue_number),
@@ -156,10 +156,6 @@ impl BountyBoard {
             blocked_reason: None,
             created_at: now,
         };
-        self.issues.insert(issue_id, issue);
-        self.issue_by_number
-            .insert((REPO_ID, issue_number), issue_id);
-
         let repo = self
             .repos
             .get_mut(&REPO_ID)
@@ -174,6 +170,16 @@ impl BountyBoard {
                 .ok_or(ContractError::DailyCapExceeded)?;
             self.daily_spend.insert(daily_key, total);
         }
+
+        let repo_view = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        self.maybe_escalate(repo_view, &mut issue);
+        let status = issue.status;
+        self.issues.insert(issue_id, issue);
+        self.issue_by_number
+            .insert((REPO_ID, issue_number), issue_id);
 
         events::bounty_created(
             issue_id,
@@ -224,6 +230,28 @@ impl BountyBoard {
             .count() as u32
     }
 
+    fn maybe_escalate(&self, repo: &Repo, issue: &mut Issue) {
+        if issue.status != IssueStatus::PendingApproval || !repo.bootstrap_ended {
+            return;
+        }
+        let required = issue.tier.required_maintainer_approvals();
+        let current = self.unconflicted_approvals(issue);
+        let potential = repo
+            .maintainers
+            .keys()
+            .filter(|account| {
+                !self.is_conflicted(issue, account)
+                    && !issue
+                        .approvals
+                        .iter()
+                        .any(|approval| &approval.approver == *account)
+            })
+            .count() as u32;
+        if current + potential < required {
+            issue.status = IssueStatus::Escalated;
+        }
+    }
+
     #[handle_result]
     pub fn approve(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
         let caller = env::predecessor_account_id();
@@ -255,6 +283,7 @@ impl BountyBoard {
         if self.unconflicted_approvals(&issue) >= issue.tier.required_maintainer_approvals() {
             issue.status = approved_status(&issue);
         }
+        self.maybe_escalate(repo, &mut issue);
         let status = issue.status;
         self.issues.insert(issue_id, issue);
         events::bounty_approved(issue_id, caller, ApprovalSource::Maintainer, status);
@@ -1144,6 +1173,100 @@ mod tests {
 
         contract.approve(1).unwrap();
         assert_eq!(contract.issues.get(&1).unwrap().status, IssueStatus::Merged);
+    }
+
+    fn normal_mode_contract() -> BountyBoard {
+        let mut contract = three_maintainer_contract();
+        contract.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+        contract
+    }
+
+    #[test]
+    fn insufficient_unconflicted_maintainers_escalate() {
+        let mut two = contract_with_repo(
+            vec![accounts(1), accounts(3)],
+            100 * ONE_NEAR,
+            100 * ONE_NEAR,
+        );
+        two.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+        set_predecessor(accounts(1));
+        let s1 = two
+            .create_bounty(1, Tier::S1, U128(ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(two.issues.get(&s1).unwrap().status, IssueStatus::Escalated);
+        set_predecessor(accounts(3));
+        assert_eq!(two.approve(s1), Err(ContractError::InvalidState));
+
+        let mut one = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 100 * ONE_NEAR);
+        one.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+        set_predecessor(accounts(1));
+        let s2 = one
+            .create_bounty(1, Tier::S2, U128(ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(one.issues.get(&s2).unwrap().status, IssueStatus::Escalated);
+    }
+
+    #[test]
+    fn escalation_waits_for_approval_when_a_path_exists() {
+        let mut contract = normal_mode_contract();
+        set_predecessor(accounts(1));
+        let s1 = contract
+            .create_bounty(1, Tier::S1, U128(ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        set_predecessor(accounts(3));
+        contract.approve(s1).unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+
+        set_predecessor(accounts(4));
+        contract.approve(s1).unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::Approved
+        );
+    }
+
+    #[test]
+    fn conflict_after_creation_can_escalate_an_issue() {
+        let mut contract = normal_mode_contract();
+        set_predecessor(accounts(1));
+        let s1 = contract
+            .create_bounty(1, Tier::S1, U128(ONE_NEAR), None)
+            .unwrap();
+
+        set_predecessor(accounts(4));
+        contract.claim(s1).unwrap();
+        set_predecessor(accounts(3));
+        contract.approve(s1).unwrap();
+
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::Escalated
+        );
+    }
+
+    #[test]
+    fn bootstrap_mode_does_not_escalate() {
+        let mut contract = contract_with_repo(
+            vec![accounts(1), accounts(3)],
+            100 * ONE_NEAR,
+            100 * ONE_NEAR,
+        );
+        set_predecessor(accounts(1));
+        let s1 = contract
+            .create_bounty(1, Tier::S1, U128(ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::PendingApproval
+        );
     }
 
     #[test]
