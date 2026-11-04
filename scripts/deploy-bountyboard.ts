@@ -7,7 +7,7 @@ import { nearToYocto } from "near-api-js";
 import { loadEnv, requireSecret } from "./lib/env";
 import {
   accountExists,
-  call,
+  callRaw,
   createSubaccount,
   deployContract,
   hasContractCode,
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
 
   const config = boardConfig(env);
   console.log("Initializing BountyBoard");
-  const initResult = (await call(
+  const initResult = (await callRaw(
     env,
     env.BOUNTYBOARD_ACCOUNT,
     deployerSecret,

@@ -6,7 +6,7 @@ import { fetchSputnik } from "./fetch-sputnik";
 import { loadEnv, requireSecret } from "./lib/env";
 import {
   accountExists,
-  call,
+  callRaw,
   createSubaccount,
   deployContract,
   getBalance,
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
   console.log(`Deploy tx: ${txHash(deployResult)}`);
 
   console.log("Initializing DAO with the custom policy");
-  const initResult = (await call(
+  const initResult = (await callRaw(
     env,
     env.DAO_ACCOUNT,
     deployerSecret,

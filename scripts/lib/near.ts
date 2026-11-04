@@ -72,6 +72,25 @@ export async function call<T extends SerializedReturnValue = SerializedReturnVal
   });
 }
 
+export async function callRaw(
+  env: Env,
+  senderAccountId: string,
+  senderSecret: string,
+  contractId: string,
+  method: string,
+  args: Record<string, unknown> = {},
+  options: { deposit?: bigint; gas?: bigint } = {},
+) {
+  const account = signingAccount(env, senderAccountId, senderSecret);
+  return account.callFunctionRaw({
+    contractId,
+    methodName: method,
+    args,
+    deposit: options.deposit ?? 0n,
+    gas: options.gas ?? DEFAULT_GAS,
+  });
+}
+
 export async function accountExists(
   env: Env,
   accountId: string,
