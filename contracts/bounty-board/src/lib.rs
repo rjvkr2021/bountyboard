@@ -6,6 +6,7 @@ use near_sdk::{AccountId, PanicOnDefault, env, near};
 
 pub mod access;
 pub mod errors;
+pub mod events;
 pub mod state;
 pub mod types;
 
@@ -103,13 +104,14 @@ impl BountyBoard {
             });
         }
         let bootstrap_ended = records.len() >= self.bootstrap_until_maintainers as usize;
+        let maintainers = records.keys().cloned().collect::<Vec<AccountId>>();
 
         self.repos.insert(
             REPO_ID,
             Repo {
-                github_repo,
+                github_repo: github_repo.clone(),
                 maintainers: records,
-                oracle,
+                oracle: oracle.clone(),
                 budget: 0,
                 committed: 0,
                 daily_cap: DEFAULT_DAILY_CAP_YOCTO,
@@ -117,6 +119,7 @@ impl BountyBoard {
                 bootstrap_ended,
             },
         );
+        events::repo_added(REPO_ID, github_repo, maintainers, oracle);
 
         Ok(())
     }
@@ -133,6 +136,8 @@ impl BountyBoard {
             return Err(ContractError::BudgetBelowCommitted);
         }
         repo.budget = amount.0;
+        let committed = repo.committed;
+        events::repo_budget_set(repo_id, amount.0, committed);
 
         Ok(())
     }
@@ -146,6 +151,7 @@ impl BountyBoard {
             .get_mut(&repo_id)
             .ok_or(ContractError::RepoNotFound)?;
         repo.paused = paused;
+        events::repo_paused(repo_id, paused);
 
         Ok(())
     }
