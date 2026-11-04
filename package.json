@@ -10,7 +10,8 @@
     "dao:fetch": "tsx scripts/fetch-sputnik.ts",
     "dao:create": "tsx scripts/create-dao.ts",
     "contract:deploy": "tsx scripts/deploy-bountyboard.ts",
-    "verify:policy": "tsx scripts/verify-policy.ts"
+    "verify:policy": "tsx scripts/verify-policy.ts",
+    "check:env": "tsx scripts/check-env.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
