@@ -1,10 +1,19 @@
 use near_sdk::json_types::{Base64VecU8, U64, U128};
-use near_sdk::{AccountId, near};
+use near_sdk::{AccountId, ext_contract, near};
 
 pub const GAS_FOR_ADD_PROPOSAL: u64 = 30_000_000_000_000;
 pub const GAS_FOR_ACT_PROPOSAL: u64 = 30_000_000_000_000;
 pub const GAS_FOR_GET_POLICY: u64 = 10_000_000_000_000;
 pub const GAS_FOR_GET_PROPOSAL: u64 = 10_000_000_000_000;
+
+#[ext_contract(ext_dao)]
+pub trait Dao {
+    fn add_proposal(&mut self, proposal: ProposalInput) -> u64;
+    fn act_proposal(&mut self, id: u64, action: Action, memo: Option<String>);
+    fn get_policy(&self) -> Policy;
+    fn get_proposal(&self, id: u64) -> ProposalOutput;
+    fn get_available_amount(&self) -> U128;
+}
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
