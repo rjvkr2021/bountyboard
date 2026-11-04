@@ -1,0 +1,8 @@
+{
+  "sputnik": {
+    "version": "2.0.0",
+    "commit": "c2cf1553b070d04eed8f659571440b27d398c588",
+    "wasmUrl": "https://raw.githubusercontent.com/near-daos/sputnik-dao-contract/c2cf1553b070d04eed8f659571440b27d398c588/sputnikdao2/res/sputnikdao2.wasm",
+    "sha256": "6e3f1814d40769d8f57b9a7af689d22aaab96d3232cec4d861311829c1d2318f"
+  }
+}
