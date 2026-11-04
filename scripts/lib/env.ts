@@ -29,6 +29,21 @@ export const EnvSchema = z
     DAO_BOUNTY_BOND_NEAR: z.coerce.number().nonnegative().default(1),
     DAO_PROPOSAL_PERIOD_SECS: z.coerce.number().int().positive().default(604800),
     DAO_BOUNTY_FORGIVENESS_SECS: z.coerce.number().int().positive().default(86400),
+    BOUNTYBOARD_WASM_PATH: z.string().optional(),
+    BOOTSTRAP_UNTIL_MAINTAINERS: z.coerce.number().int().positive().default(3),
+    COUNCIL_PROMOTION_MIN_APPROVALS: z.coerce.number().int().positive().default(3),
+    MAINTAINER_CHALLENGE_SECS: z.coerce.number().int().positive().default(604800),
+    COUNCIL_PROMOTION_MIN_TENURE_SECS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(604800),
+    COUNCIL_PROMOTION_DELAY_SECS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(604800),
+    COUNCIL_ROLE_NAME: z.string().min(1).default("council"),
   })
   .passthrough();
 
@@ -82,6 +97,12 @@ export function summarizeEnv(env: Env): string {
     `DAO_BOUNTY_BOND_NEAR=${env.DAO_BOUNTY_BOND_NEAR}`,
     `DAO_PROPOSAL_PERIOD_SECS=${env.DAO_PROPOSAL_PERIOD_SECS}`,
     `DAO_BOUNTY_FORGIVENESS_SECS=${env.DAO_BOUNTY_FORGIVENESS_SECS}`,
+    `BOOTSTRAP_UNTIL_MAINTAINERS=${env.BOOTSTRAP_UNTIL_MAINTAINERS}`,
+    `MAINTAINER_CHALLENGE_SECS=${env.MAINTAINER_CHALLENGE_SECS}`,
+    `COUNCIL_PROMOTION_MIN_TENURE_SECS=${env.COUNCIL_PROMOTION_MIN_TENURE_SECS}`,
+    `COUNCIL_PROMOTION_DELAY_SECS=${env.COUNCIL_PROMOTION_DELAY_SECS}`,
+    `COUNCIL_PROMOTION_MIN_APPROVALS=${env.COUNCIL_PROMOTION_MIN_APPROVALS}`,
+    `COUNCIL_ROLE_NAME=${env.COUNCIL_ROLE_NAME}`,
   ].join("\n");
 }
 
