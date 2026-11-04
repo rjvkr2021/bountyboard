@@ -2,17 +2,19 @@ use std::collections::BTreeMap;
 
 use near_sdk::json_types::U128;
 use near_sdk::store::{IterableMap, LookupMap};
-use near_sdk::{AccountId, PanicOnDefault, near};
+use near_sdk::{AccountId, PanicOnDefault, env, near};
 
 pub mod access;
 pub mod errors;
 pub mod state;
 pub mod types;
 
+use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
-    BoardConfig, BudgetView, Candidate, CouncilRequest, DaoParams, Issue, IssueId,
-    MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation,
+    BoardConfig, BudgetView, Candidate, CouncilRequest, DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue,
+    IssueId, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId,
+    Reputation,
 };
 
 #[near(contract_state)]
@@ -73,6 +75,50 @@ impl BountyBoard {
 
     pub fn get_dao(&self) -> AccountId {
         self.dao.clone()
+    }
+
+    #[handle_result]
+    pub fn add_repo(
+        &mut self,
+        github_repo: String,
+        maintainers: Vec<AccountId>,
+        oracle: AccountId,
+    ) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+
+        if self.repos.contains_key(&REPO_ID) {
+            return Err(ContractError::DuplicateRepo);
+        }
+        if maintainers.is_empty() {
+            return Err(ContractError::EmptyMaintainers);
+        }
+
+        let now = env::block_timestamp();
+        let mut records = BTreeMap::new();
+        for account in maintainers {
+            records.entry(account).or_insert(MaintainerRecord {
+                since: now,
+                bounties_approved: 0,
+                last_council_request_at: 0,
+            });
+        }
+        let bootstrap_ended = records.len() >= self.bootstrap_until_maintainers as usize;
+
+        self.repos.insert(
+            REPO_ID,
+            Repo {
+                github_repo,
+                maintainers: records,
+                oracle,
+                budget: 0,
+                committed: 0,
+                daily_cap: DEFAULT_DAILY_CAP_YOCTO,
+                paused: false,
+                bootstrap_ended,
+            },
+        );
+
+        Ok(())
     }
 
     pub fn get_config(&self) -> BoardConfig {
@@ -167,6 +213,12 @@ mod tests {
 
     fn context() {
         testing_env!(VMContextBuilder::new().build());
+    }
+
+    fn set_predecessor(account: AccountId) {
+        let mut builder = VMContextBuilder::new();
+        builder.predecessor_account_id(account);
+        testing_env!(builder.build());
     }
 
     #[test]
@@ -394,5 +446,112 @@ mod tests {
         assert_eq!(contract.get_candidates(1, 10).len(), 0);
         assert_eq!(contract.get_council_requests(0, 10).len(), 1);
         assert_eq!(contract.get_council_requests(1, 10).len(), 0);
+    }
+
+    #[test]
+    fn add_repo_requires_dao() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        set_predecessor(accounts(1));
+
+        assert_eq!(
+            contract.add_repo("owner/repo".to_string(), vec![accounts(2)], accounts(3)),
+            Err(ContractError::NotDao)
+        );
+        assert_eq!(contract.get_repo(), None);
+    }
+
+    #[test]
+    fn add_repo_rejects_duplicate_repo() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        set_predecessor(accounts(0));
+
+        assert_eq!(
+            contract.add_repo("owner/repo".to_string(), vec![accounts(2)], accounts(3)),
+            Ok(())
+        );
+        assert_eq!(
+            contract.add_repo("other/repo".to_string(), vec![accounts(2)], accounts(3)),
+            Err(ContractError::DuplicateRepo)
+        );
+    }
+
+    #[test]
+    fn add_repo_rejects_empty_maintainers() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        set_predecessor(accounts(0));
+
+        assert_eq!(
+            contract.add_repo("owner/repo".to_string(), Vec::new(), accounts(3)),
+            Err(ContractError::EmptyMaintainers)
+        );
+    }
+
+    #[test]
+    fn add_repo_seeds_initial_state() {
+        let mut builder = VMContextBuilder::new();
+        builder
+            .predecessor_account_id(accounts(0))
+            .block_timestamp(12_345);
+        testing_env!(builder.build());
+        let mut contract = BountyBoard::new(accounts(0), None);
+
+        contract
+            .add_repo("owner/repo".to_string(), vec![accounts(2)], accounts(3))
+            .unwrap();
+
+        let repo = contract.get_repo().unwrap();
+        assert_eq!(repo.github_repo, "owner/repo");
+        assert_eq!(repo.oracle, accounts(3));
+        assert_eq!(repo.budget, 0);
+        assert_eq!(repo.committed, 0);
+        assert_eq!(repo.daily_cap, DEFAULT_DAILY_CAP_YOCTO);
+        assert!(!repo.paused);
+        assert!(!repo.bootstrap_ended);
+
+        let record = repo.maintainers.get(&accounts(2)).unwrap();
+        assert_eq!(record.since, 12_345);
+        assert_eq!(record.bounties_approved, 0);
+        assert_eq!(record.last_council_request_at, 0);
+    }
+
+    #[test]
+    fn add_repo_dedupes_maintainers_and_sets_bootstrap_end() {
+        context();
+        let config = BoardConfig {
+            bootstrap_until_maintainers: 2,
+            ..Default::default()
+        };
+        let mut contract = BountyBoard::new(accounts(0), Some(config));
+        set_predecessor(accounts(0));
+
+        contract
+            .add_repo(
+                "owner/repo".to_string(),
+                vec![accounts(2), accounts(2)],
+                accounts(3),
+            )
+            .unwrap();
+        assert_eq!(contract.get_maintainers().len(), 1);
+        assert!(!contract.get_repo().unwrap().bootstrap_ended);
+
+        let mut second = BountyBoard::new(
+            accounts(0),
+            Some(BoardConfig {
+                bootstrap_until_maintainers: 2,
+                ..Default::default()
+            }),
+        );
+        set_predecessor(accounts(0));
+        second
+            .add_repo(
+                "owner/repo".to_string(),
+                vec![accounts(2), accounts(4)],
+                accounts(3),
+            )
+            .unwrap();
+        assert!(second.get_repo().unwrap().bootstrap_ended);
     }
 }
