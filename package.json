@@ -11,6 +11,7 @@
     "dao:create": "tsx scripts/create-dao.ts",
     "contract:deploy": "tsx scripts/deploy-bountyboard.ts",
     "verify:policy": "tsx scripts/verify-policy.ts",
+    "reserve:fund": "tsx scripts/fund-reserve.ts",
     "check:env": "tsx scripts/check-env.ts"
   },
   "dependencies": {

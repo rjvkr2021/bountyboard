@@ -27,6 +27,7 @@ npm run dao:create
 npm run smart-contract:build
 npm run contract:deploy
 npm run verify:policy
+npm run reserve:fund
 ```
 
 `check:env` fails unless the network is `testnet`, the deployer, founder, and
@@ -38,8 +39,12 @@ sha256 against `scripts/versions.json`, and initializes the DAO with the policy
 from `scripts/lib/policy.ts`.
 
 `contract:deploy` deploys the BountyBoard wasm and initializes it with the DAO
-account and the D11 timing values from `.env`. It does not fund the reserve;
-seeding is a separate later step.
+account and the D11 timing values from `.env`. It does not fund the reserve.
+
+`reserve:fund` calls the payable `fund_reserve` method from the deployer with
+`BOUNTYBOARD_RESERVE_NEAR` attached (at least `10` NEAR on testnet) and verifies
+that `get_reserve` increased. `get_reserve` reports the whole contract balance,
+not only the unlocked portion.
 
 `verify:policy` reads `get_policy` from the DAO and exits non-zero if any role,
 permission, or vote-policy invariant is violated.

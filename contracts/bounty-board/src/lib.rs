@@ -521,6 +521,13 @@ impl BountyBoard {
         self.dao_params.clone()
     }
 
+    #[payable]
+    pub fn fund_reserve(&mut self) {}
+
+    pub fn get_reserve(&self) -> U128 {
+        U128(env::account_balance().as_yoctonear())
+    }
+
     pub fn sync_dao_params(&self) -> Promise {
         dao::ext_dao::ext(self.dao.clone())
             .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_POLICY))
@@ -1069,6 +1076,18 @@ mod tests {
         assert!(!json.contains("ghsa_id"));
         assert!(!json.contains("advisory_url"));
         assert!(!json.contains("researcher_github"));
+    }
+
+    #[test]
+    fn fund_reserve_leaves_state_untouched_and_reports_balance() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let balance = env::account_balance().as_yoctonear();
+
+        contract.fund_reserve();
+
+        assert_eq!(contract.get_reserve(), U128(balance));
+        assert_eq!(contract.get_dao_params(), DaoParams::default());
     }
 
     #[test]
