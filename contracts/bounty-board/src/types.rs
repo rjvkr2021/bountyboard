@@ -65,6 +65,54 @@ impl Tier {
     }
 }
 
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueStatus {
+    PendingApproval,
+    Approved,
+    Merged,
+    PayoutRequested,
+    PayoutPending,
+    PayoutProcessing,
+    PayoutFailed,
+    Paid,
+    Escalated,
+    Cancelled,
+    Refunded,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueKind {
+    PublicIssue,
+    PrivateSecurity,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeSource {
+    Oracle,
+    Manual,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalSource {
+    AutoS3,
+    Maintainer,
+    Council,
+    BootstrapCouncil,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PayoutStatus {
+    Processing,
+    Paid,
+    Failed,
+    Refunded,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +183,92 @@ mod tests {
         assert!(!Tier::S0.is_s3());
         assert!(!Tier::S1.is_s3());
         assert!(!Tier::S2.is_s3());
+    }
+
+    #[test]
+    fn issue_status_json_names_are_stable() {
+        let names = [
+            (IssueStatus::PendingApproval, "PendingApproval"),
+            (IssueStatus::Approved, "Approved"),
+            (IssueStatus::Merged, "Merged"),
+            (IssueStatus::PayoutRequested, "PayoutRequested"),
+            (IssueStatus::PayoutPending, "PayoutPending"),
+            (IssueStatus::PayoutProcessing, "PayoutProcessing"),
+            (IssueStatus::PayoutFailed, "PayoutFailed"),
+            (IssueStatus::Paid, "Paid"),
+            (IssueStatus::Escalated, "Escalated"),
+            (IssueStatus::Cancelled, "Cancelled"),
+            (IssueStatus::Refunded, "Refunded"),
+        ];
+        for (value, name) in names {
+            assert_eq!(
+                serde_json::to_string(&value).unwrap(),
+                format!("\"{name}\"")
+            );
+        }
+    }
+
+    #[test]
+    fn issue_kind_json_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&IssueKind::PublicIssue).unwrap(),
+            "\"PublicIssue\""
+        );
+        assert_eq!(
+            serde_json::to_string(&IssueKind::PrivateSecurity).unwrap(),
+            "\"PrivateSecurity\""
+        );
+    }
+
+    #[test]
+    fn merge_source_json_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&MergeSource::Oracle).unwrap(),
+            "\"Oracle\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MergeSource::Manual).unwrap(),
+            "\"Manual\""
+        );
+    }
+
+    #[test]
+    fn approval_source_json_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&ApprovalSource::AutoS3).unwrap(),
+            "\"AutoS3\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ApprovalSource::Maintainer).unwrap(),
+            "\"Maintainer\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ApprovalSource::Council).unwrap(),
+            "\"Council\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ApprovalSource::BootstrapCouncil).unwrap(),
+            "\"BootstrapCouncil\""
+        );
+    }
+
+    #[test]
+    fn payout_status_json_names_are_stable() {
+        assert_eq!(
+            serde_json::to_string(&PayoutStatus::Processing).unwrap(),
+            "\"Processing\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PayoutStatus::Paid).unwrap(),
+            "\"Paid\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PayoutStatus::Failed).unwrap(),
+            "\"Failed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PayoutStatus::Refunded).unwrap(),
+            "\"Refunded\""
+        );
     }
 }
