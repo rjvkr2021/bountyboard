@@ -5,6 +5,7 @@ use near_sdk::store::{IterableMap, LookupMap};
 use near_sdk::{AccountId, PanicOnDefault, env, near};
 
 pub mod access;
+pub mod dao;
 pub mod errors;
 pub mod events;
 pub mod state;
