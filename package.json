@@ -1,0 +1,22 @@
+{
+  "name": "bountyboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "smart-contract:build": "cargo near build non-reproducible-wasm"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "near-api-js": "^7.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
