@@ -9,6 +9,7 @@ pub mod errors;
 pub mod events;
 pub mod state;
 pub mod types;
+pub mod validation;
 
 use crate::errors::ContractError;
 use crate::state::StorageKey;
