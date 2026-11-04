@@ -1,0 +1,41 @@
+{
+  "network": "testnet",
+  "deployedAt": "2026-11-04T17:33:33Z",
+  "sputnik": {
+    "version": "2.0.0",
+    "commit": "c2cf1553b070d04eed8f659571440b27d398c588",
+    "wasmSha256": "6e3f1814d40769d8f57b9a7af689d22aaab96d3232cec4d861311829c1d2318f"
+  },
+  "accounts": {
+    "deployer": "bountyboard.testnet",
+    "founder": "founder.bountyboard.testnet",
+    "oracle": "oracle.bountyboard.testnet",
+    "dao": "bounty-dao.bountyboard.testnet",
+    "bountyboard": "bountyboard.bounty-dao.bountyboard.testnet"
+  },
+  "config": {
+    "bootstrapUntilMaintainers": 3,
+    "maintainerChallengeSecs": 60,
+    "councilPromotionMinTenureSecs": 60,
+    "councilPromotionDelaySecs": 60,
+    "councilPromotionMinApprovals": 3,
+    "councilRoleName": "council"
+  },
+  "daoPolicy": {
+    "proposalBondYocto": "1000000000000000000000000",
+    "bountyBondYocto": "1000000000000000000000000",
+    "proposalPeriodNs": "604800000000000",
+    "bountyForgivenessPeriodNs": "86400000000000"
+  },
+  "transactions": {
+    "daoCreateAccount": "HwTmAwhbKiavTcKU1NPLAu5c2m42aGgCU6VM9MTXRPSV",
+    "daoFundInitial": "3sGyTZLG4W8xjjV56fkdz3HWwnVuGba9LiZsZtzuCKEA",
+    "daoFundSecond": "9KCvBSYzs72Pm7VCgETik7dFPYpzvsTxuishpFVQH2Y5",
+    "daoFundForBountyBoard": "E25t3bUjTC21tF9RNxsBSPicPE3Fj6NVZqPYgJ5M3P8K",
+    "daoDeploy": "2GhzuU25CLQPLZxXKzBTfMA3FH2KRgyUrq5Krbnou5yK",
+    "daoInit": "8JSNT5jRjswp8FQ4QU2qWiBZ7bazqaQ5BVwiUMfGkubf",
+    "bountyboardCreateAccount": "9nz4v85UZXDzixNmYpNiyXs2gC5xDjZoRLX7YfgRReQA",
+    "bountyboardDeploy": "4Gav2pVz4NaEnrvUYR4nV1EdJoey1hXaCBzNbsGvriC3",
+    "bountyboardInit": "CV7GLmnrbbEniUkiT5shyvdYn61Ec8jgt87qnB5SiLAv"
+  }
+}

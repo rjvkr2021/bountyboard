@@ -19,3 +19,7 @@ dist/
 # OS / editor noise
 .DS_Store
 *.swp
+
+# Deployment records (public addresses and tx hashes only)
+deployments/*
+!deployments/testnet.json
