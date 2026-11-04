@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use near_sdk::json_types::U128;
 use near_sdk::store::{IterableMap, LookupMap};
-use near_sdk::{AccountId, PanicOnDefault, env, near};
+use near_sdk::{AccountId, PanicOnDefault, Promise, PromiseError, env, near};
 
 pub mod access;
 pub mod dao;
@@ -12,6 +12,7 @@ pub mod state;
 pub mod types;
 pub mod validation;
 
+use crate::dao::Policy;
 use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
@@ -518,6 +519,28 @@ impl BountyBoard {
 
     pub fn get_dao_params(&self) -> DaoParams {
         self.dao_params.clone()
+    }
+
+    pub fn sync_dao_params(&self) -> Promise {
+        dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_POLICY))
+            .get_policy()
+    }
+
+    #[private]
+    pub fn on_dao_policy(&mut self, #[callback_result] result: Result<Policy, PromiseError>) {
+        match result {
+            Ok(policy) => self.apply_dao_policy(&policy),
+            Err(_) => env::log_str("sync_dao_params failed"),
+        }
+    }
+
+    fn apply_dao_policy(&mut self, policy: &Policy) {
+        self.dao_params.proposal_bond = policy.proposal_bond;
+        self.dao_params.bounty_bond = policy.bounty_bond;
+        self.dao_params.proposal_period = policy.proposal_period.0;
+        self.dao_params.bounty_forgiveness_period = policy.bounty_forgiveness_period.0;
+        self.dao_params.synced_at = env::block_timestamp();
     }
 
     pub fn get_config(&self) -> BoardConfig {
@@ -1046,6 +1069,35 @@ mod tests {
         assert!(!json.contains("ghsa_id"));
         assert!(!json.contains("advisory_url"));
         assert!(!json.contains("researcher_github"));
+    }
+
+    #[test]
+    fn apply_dao_policy_stores_bonds_and_periods() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let policy = Policy {
+            roles: vec![],
+            default_vote_policy: crate::dao::VotePolicy {
+                weight_kind: crate::dao::WeightKind::RoleWeight,
+                quorum: U128(0),
+                threshold: crate::dao::WeightOrRatio::Ratio(1, 2),
+            },
+            proposal_bond: U128(ONE_NEAR),
+            proposal_period: near_sdk::json_types::U64(604_800_000_000_000),
+            bounty_bond: U128(2 * ONE_NEAR),
+            bounty_forgiveness_period: near_sdk::json_types::U64(86_400_000_000_000),
+        };
+
+        contract.apply_dao_policy(&policy);
+
+        assert_eq!(contract.dao_params.proposal_bond, U128(ONE_NEAR));
+        assert_eq!(contract.dao_params.bounty_bond, U128(2 * ONE_NEAR));
+        assert_eq!(contract.dao_params.proposal_period, 604_800_000_000_000);
+        assert_eq!(
+            contract.dao_params.bounty_forgiveness_period,
+            86_400_000_000_000
+        );
+        assert_eq!(contract.dao_params.synced_at, env::block_timestamp());
     }
 
     #[test]
