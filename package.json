@@ -9,7 +9,8 @@
     "smart-contract:build": "cargo near build non-reproducible-wasm",
     "dao:fetch": "tsx scripts/fetch-sputnik.ts",
     "dao:create": "tsx scripts/create-dao.ts",
-    "contract:deploy": "tsx scripts/deploy-bountyboard.ts"
+    "contract:deploy": "tsx scripts/deploy-bountyboard.ts",
+    "verify:policy": "tsx scripts/verify-policy.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
