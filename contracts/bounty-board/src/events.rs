@@ -67,6 +67,22 @@ pub struct BountyClaimed {
     pub claimant: AccountId,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutRequested {
+    pub issue_id: IssueId,
+    pub proposal_id: u64,
+    pub recipient: AccountId,
+    pub amount: U128,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayoutRequestFailed {
+    pub issue_id: IssueId,
+    pub reason: String,
+}
+
 #[derive(Serialize)]
 struct EventEnvelope<'a, T> {
     standard: &'a str,
@@ -136,6 +152,25 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
             maintainer,
             released: U128(released),
         },
+    );
+}
+
+pub fn payout_requested(issue_id: IssueId, proposal_id: u64, recipient: AccountId, amount: u128) {
+    emit(
+        "payout_requested",
+        &PayoutRequested {
+            issue_id,
+            proposal_id,
+            recipient,
+            amount: U128(amount),
+        },
+    );
+}
+
+pub fn payout_request_failed(issue_id: IssueId, reason: String) {
+    emit(
+        "payout_request_failed",
+        &PayoutRequestFailed { issue_id, reason },
     );
 }
 
@@ -317,5 +352,40 @@ mod tests {
 
         assert_eq!(value["event"], "repo_paused");
         assert_eq!(value["data"]["paused"], true);
+    }
+    #[test]
+    fn payout_requested_event_shape() {
+        let log = event_json(
+            "payout_requested",
+            &PayoutRequested {
+                issue_id: 3,
+                proposal_id: 9,
+                recipient: accounts(4),
+                amount: U128(10),
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "payout_requested");
+        assert_eq!(value["data"]["issue_id"], 3);
+        assert_eq!(value["data"]["proposal_id"], 9);
+        assert_eq!(value["data"]["recipient"], accounts(4).to_string());
+        assert_eq!(value["data"]["amount"], "10");
+    }
+
+    #[test]
+    fn payout_request_failed_event_shape() {
+        let log = event_json(
+            "payout_request_failed",
+            &PayoutRequestFailed {
+                issue_id: 3,
+                reason: "payout proposal expired".to_string(),
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "payout_request_failed");
+        assert_eq!(value["data"]["issue_id"], 3);
+        assert_eq!(value["data"]["reason"], "payout proposal expired");
     }
 }

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use near_sdk::json_types::U128;
 use near_sdk::{AccountId, Timestamp, near};
 
+use crate::dao::ProposalKind;
+
 pub type RepoId = u64;
 pub type IssueId = u64;
 pub type PayoutId = u64;
@@ -20,6 +22,8 @@ pub const WEEK_SECS: u64 = 7 * DAY_SECS;
 pub const DEFAULT_BOOTSTRAP_UNTIL_MAINTAINERS: u32 = 3;
 pub const DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS: u32 = 3;
 pub const DEFAULT_COUNCIL_ROLE_NAME: &str = "council";
+pub const GAS_FOR_PAYOUT: u64 = 30_000_000_000_000;
+pub const GAS_FOR_PAYOUT_CALLBACK: u64 = 20_000_000_000_000;
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +233,8 @@ pub struct Issue {
     pub security: Option<SecurityDisclosure>,
     pub s0: Option<S0State>,
     pub payout_id: Option<PayoutId>,
+    pub payout_proposal_id: Option<u64>,
+    pub pending_payout: Option<PendingPayout>,
     pub blocked_reason: Option<String>,
     pub cancelled_by: Option<AccountId>,
     pub created_at: Timestamp,
@@ -238,6 +244,24 @@ impl Issue {
     pub fn has_exactly_one_identifier(&self) -> bool {
         self.issue_number.is_some() ^ self.private_ref.is_some()
     }
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionKind {
+    PullRequest,
+    AdvisoryPublication,
+}
+
+#[near(serializers = [json, borsh])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingPayout {
+    pub issue_id: IssueId,
+    pub recipient: AccountId,
+    pub amount: U128,
+    pub proof_kind: CompletionKind,
+    pub proposal_id: Option<u64>,
+    pub proposal_kind: ProposalKind,
 }
 
 #[near(serializers = [json, borsh])]
@@ -522,6 +546,8 @@ mod tests {
             security: None,
             s0: None,
             payout_id: None,
+            payout_proposal_id: None,
+            pending_payout: None,
             blocked_reason: None,
             cancelled_by: None,
             created_at: 0,

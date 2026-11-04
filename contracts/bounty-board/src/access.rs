@@ -130,6 +130,8 @@ mod tests {
             security: None,
             s0: None,
             payout_id: None,
+            payout_proposal_id: None,
+            pending_payout: None,
             blocked_reason: None,
             cancelled_by: None,
             created_at: 0,

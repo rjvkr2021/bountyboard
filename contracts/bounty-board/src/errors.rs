@@ -33,6 +33,7 @@ pub enum ContractError {
     IdentityAlreadyLinked,
     S0NotEnabled,
     InvalidAmount,
+    InsufficientBond,
     StorageError,
 }
 
@@ -73,6 +74,9 @@ impl std::fmt::Display for ContractError {
             ContractError::IdentityAlreadyLinked => "GitHub identity is already linked",
             ContractError::S0NotEnabled => "S0 bounties are not enabled yet",
             ContractError::InvalidAmount => "invalid bounty amount",
+            ContractError::InsufficientBond => {
+                "attached deposit does not cover the DAO proposal bond"
+            }
             ContractError::StorageError => "storage error",
         };
         write!(f, "{message}")

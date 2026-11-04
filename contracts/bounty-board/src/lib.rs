@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
-use near_sdk::json_types::U128;
+use near_sdk::json_types::{Base64VecU8, U128};
 use near_sdk::store::{IterableMap, LookupMap};
-use near_sdk::{AccountId, PanicOnDefault, Promise, PromiseError, env, near};
+use near_sdk::{
+    AccountId, NearToken, PanicOnDefault, Promise, PromiseError, PromiseOrValue, env, near,
+};
 
 pub mod access;
 pub mod dao;
@@ -12,15 +14,27 @@ pub mod state;
 pub mod types;
 pub mod validation;
 
-use crate::dao::Policy;
+use crate::dao::{
+    Action, ActionCall, Policy, ProposalInput, ProposalKind, ProposalOutput, ProposalStatus,
+};
 use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
-    Approval, ApprovalSource, BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest,
-    DAY_SECS, DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue, IssueId, IssueKind, IssueStatus,
-    MAX_CLAIMANTS, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId,
+    Approval, ApprovalSource, BoardConfig, BootstrapState, BudgetView, Candidate, CompletionKind,
+    CouncilRequest, DAY_SECS, DEFAULT_DAILY_CAP_YOCTO, DaoParams, GAS_FOR_PAYOUT,
+    GAS_FOR_PAYOUT_CALLBACK, Issue, IssueId, IssueKind, IssueStatus, MAX_CLAIMANTS,
+    MaintainerRecord, PayoutId, PayoutRecord, PendingPayout, PrivateRef, REPO_ID, Repo, RepoId,
     Reputation, S3_AUTO_APPROVE_MAX_YOCTO, S3_AUTO_MIN_COMPLETED, Tier,
 };
+
+#[near_sdk::ext_contract(ext_self)]
+pub trait Callbacks {
+    fn on_payout_proposal_created(&mut self, issue_id: IssueId);
+    fn on_payout_vote_result(&mut self, issue_id: IssueId);
+    fn on_retry_payout_proposal(&mut self, issue_id: IssueId);
+    fn on_sync_payout_proposal(&mut self, issue_id: IssueId);
+    fn on_finalize_payout_proposal(&mut self, issue_id: IssueId);
+}
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
@@ -155,6 +169,8 @@ impl BountyBoard {
             security: None,
             s0: None,
             payout_id: None,
+            payout_proposal_id: None,
+            pending_payout: None,
             blocked_reason: None,
             cancelled_by: None,
             created_at: now,
@@ -439,6 +455,426 @@ impl BountyBoard {
         Ok(())
     }
 
+    #[payable]
+    #[handle_result]
+    pub fn request_payout(
+        &mut self,
+        issue_id: IssueId,
+    ) -> Result<PromiseOrValue<()>, ContractError> {
+        let mut issue = self
+            .issues
+            .get(&issue_id)
+            .cloned()
+            .ok_or(ContractError::IssueNotFound)?;
+
+        if issue.tier.is_s0() {
+            return Err(ContractError::InvalidState);
+        }
+        if issue.kind == IssueKind::PrivateSecurity && issue.security.is_none() {
+            return Err(ContractError::SecurityNotDisclosed);
+        }
+        if issue.status != IssueStatus::Merged {
+            return Err(ContractError::InvalidState);
+        }
+
+        let recipient = self.resolve_recipient(&issue)?;
+
+        if issue.creator == recipient
+            || issue.approvals.iter().any(|approval| {
+                approval.source == ApprovalSource::Maintainer && approval.approver == recipient
+            })
+        {
+            issue.status = IssueStatus::Escalated;
+            issue.blocked_reason = Some("final recipient conflicts with an approver".to_string());
+            let reason = issue.blocked_reason.clone().unwrap_or_default();
+            self.issues.insert(issue_id, issue);
+            events::payout_request_failed(issue_id, reason);
+            return Ok(PromiseOrValue::Value(()));
+        }
+
+        if !self.approvals_sufficient(&issue) {
+            return Err(ContractError::InsufficientApprovals);
+        }
+
+        if issue
+            .approvals
+            .iter()
+            .any(|approval| approval.source == ApprovalSource::AutoS3)
+            && issue.intended_contributor.as_ref() != Some(&recipient)
+        {
+            issue.status = IssueStatus::Escalated;
+            issue.blocked_reason =
+                Some("PR author does not match intended contributor".to_string());
+            let reason = issue.blocked_reason.clone().unwrap_or_default();
+            self.issues.insert(issue_id, issue);
+            events::payout_request_failed(issue_id, reason);
+            return Ok(PromiseOrValue::Value(()));
+        }
+
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        if repo.committed.0 < issue.amount.0 {
+            return Err(ContractError::BudgetExceeded);
+        }
+
+        let bond = self.dao_params.proposal_bond.0;
+        if env::attached_deposit().as_yoctonear() < bond {
+            return Err(ContractError::InsufficientBond);
+        }
+
+        let proof_kind = match issue.kind {
+            IssueKind::PublicIssue => CompletionKind::PullRequest,
+            IssueKind::PrivateSecurity => CompletionKind::AdvisoryPublication,
+        };
+        let proposal_kind = payout_proposal_kind(issue_id, issue.amount.0);
+        let proposal = ProposalInput {
+            description: format!("BountyBoard payout issue {issue_id}"),
+            kind: proposal_kind.clone(),
+        };
+
+        issue.status = IssueStatus::PayoutRequested;
+        issue.blocked_reason = None;
+        issue.payout_proposal_id = None;
+        issue.pending_payout = Some(PendingPayout {
+            issue_id,
+            recipient,
+            amount: issue.amount,
+            proof_kind,
+            proposal_id: None,
+            proposal_kind,
+        });
+        self.issues.insert(issue_id, issue);
+
+        let promise = dao::ext_dao::ext(self.dao.clone())
+            .with_attached_deposit(NearToken::from_yoctonear(bond))
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_ADD_PROPOSAL))
+            .add_proposal(proposal)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_payout_proposal_created(issue_id),
+            );
+
+        Ok(PromiseOrValue::Promise(promise))
+    }
+
+    #[private]
+    pub fn on_payout_proposal_created(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<u64, PromiseError>,
+    ) -> PromiseOrValue<()> {
+        let mut issue = match self.issues.get(&issue_id).cloned() {
+            Some(issue) => issue,
+            None => return PromiseOrValue::Value(()),
+        };
+
+        match result {
+            Ok(proposal_id) => {
+                if let Some(pending) = issue.pending_payout.as_mut() {
+                    pending.proposal_id = Some(proposal_id);
+                } else {
+                    return PromiseOrValue::Value(());
+                }
+                issue.payout_proposal_id = Some(proposal_id);
+                issue.status = IssueStatus::PayoutPending;
+                issue.blocked_reason = None;
+                self.issues.insert(issue_id, issue);
+                self.start_payout_vote(issue_id)
+            }
+            Err(_) => {
+                let reason = "DAO proposal creation failed";
+                issue.status = IssueStatus::Merged;
+                issue.pending_payout = None;
+                issue.payout_proposal_id = None;
+                issue.blocked_reason = Some(reason.to_string());
+                self.issues.insert(issue_id, issue);
+                events::payout_request_failed(issue_id, reason.to_string());
+                PromiseOrValue::Value(())
+            }
+        }
+    }
+
+    #[private]
+    pub fn on_payout_vote_result(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<(), PromiseError>,
+    ) {
+        let mut issue = match self.issues.get(&issue_id).cloned() {
+            Some(issue) => issue,
+            None => return,
+        };
+        let Some(pending) = issue.pending_payout.clone() else {
+            return;
+        };
+        let Some(proposal_id) = pending.proposal_id else {
+            return;
+        };
+
+        match result {
+            Ok(()) => {
+                issue.status = IssueStatus::PayoutPending;
+                issue.blocked_reason = None;
+                self.issues.insert(issue_id, issue);
+                events::payout_requested(
+                    issue_id,
+                    proposal_id,
+                    pending.recipient,
+                    pending.amount.0,
+                );
+            }
+            Err(_) => {
+                let reason = "DAO auto-vote failed";
+                issue.blocked_reason = Some(reason.to_string());
+                self.issues.insert(issue_id, issue);
+                events::payout_request_failed(issue_id, reason.to_string());
+            }
+        }
+    }
+
+    #[handle_result]
+    pub fn retry_payout_vote(&mut self, issue_id: IssueId) -> Result<Promise, ContractError> {
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?;
+        if issue.status != IssueStatus::PayoutPending {
+            return Err(ContractError::InvalidState);
+        }
+        let proposal_id = issue
+            .pending_payout
+            .as_ref()
+            .and_then(|pending| pending.proposal_id)
+            .or(issue.payout_proposal_id)
+            .ok_or(ContractError::InvalidState)?;
+
+        Ok(dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_retry_payout_proposal(issue_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_retry_payout_proposal(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) -> PromiseOrValue<()> {
+        match result {
+            Ok(output) => match output.proposal.status {
+                ProposalStatus::InProgress => self.start_payout_vote(issue_id),
+                ProposalStatus::Approved => {
+                    self.mark_payout_pending(issue_id);
+                    PromiseOrValue::Value(())
+                }
+                _ => {
+                    self.set_payout_blocked(issue_id, "payout proposal is not in progress");
+                    PromiseOrValue::Value(())
+                }
+            },
+            Err(_) => {
+                self.set_payout_blocked(issue_id, "payout proposal lookup failed");
+                PromiseOrValue::Value(())
+            }
+        }
+    }
+
+    #[handle_result]
+    pub fn sync_payout_proposal(&mut self, issue_id: IssueId) -> Result<Promise, ContractError> {
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?;
+        let proposal_id = issue
+            .payout_proposal_id
+            .or_else(|| {
+                issue
+                    .pending_payout
+                    .as_ref()
+                    .and_then(|pending| pending.proposal_id)
+            })
+            .ok_or(ContractError::InvalidState)?;
+
+        Ok(dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_sync_payout_proposal(issue_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_sync_payout_proposal(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) {
+        match result {
+            Ok(output) => self.apply_payout_proposal_status(issue_id, output.proposal.status),
+            Err(_) => self.set_payout_blocked(issue_id, "payout proposal lookup failed"),
+        }
+    }
+
+    #[handle_result]
+    pub fn finalize_payout_proposal(
+        &mut self,
+        issue_id: IssueId,
+    ) -> Result<Promise, ContractError> {
+        access::assert_dao(self)?;
+        let issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?;
+        let proposal_id = issue
+            .payout_proposal_id
+            .or_else(|| {
+                issue
+                    .pending_payout
+                    .as_ref()
+                    .and_then(|pending| pending.proposal_id)
+            })
+            .ok_or(ContractError::InvalidState)?;
+
+        Ok(dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_GET_PROPOSAL))
+            .get_proposal(proposal_id)
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_finalize_payout_proposal(issue_id),
+            ))
+    }
+
+    #[private]
+    pub fn on_finalize_payout_proposal(
+        &mut self,
+        issue_id: IssueId,
+        #[callback_result] result: Result<ProposalOutput, PromiseError>,
+    ) {
+        match result {
+            Ok(output) => self.apply_payout_proposal_status(issue_id, output.proposal.status),
+            Err(_) => self.set_payout_blocked(issue_id, "payout proposal lookup failed"),
+        }
+    }
+
+    fn resolve_recipient(&self, issue: &Issue) -> Result<AccountId, ContractError> {
+        match issue.kind {
+            IssueKind::PublicIssue => {
+                let proof = issue
+                    .merge_proof
+                    .as_ref()
+                    .ok_or(ContractError::InvalidState)?;
+                self.identities
+                    .get(&proof.pr_author)
+                    .cloned()
+                    .ok_or(ContractError::IdentityNotLinked)
+            }
+            IssueKind::PrivateSecurity => {
+                let security = issue
+                    .security
+                    .as_ref()
+                    .ok_or(ContractError::SecurityNotDisclosed)?;
+                self.identities
+                    .get(&security.researcher_github)
+                    .cloned()
+                    .ok_or(ContractError::IdentityNotLinked)
+            }
+        }
+    }
+
+    fn approvals_sufficient(&self, issue: &Issue) -> bool {
+        if issue.approvals.iter().any(|approval| {
+            matches!(
+                approval.source,
+                ApprovalSource::AutoS3 | ApprovalSource::Council | ApprovalSource::BootstrapCouncil
+            )
+        }) {
+            return true;
+        }
+        self.unconflicted_approvals(issue) >= issue.tier.required_maintainer_approvals()
+    }
+
+    fn start_payout_vote(&mut self, issue_id: IssueId) -> PromiseOrValue<()> {
+        let Some(issue) = self.issues.get(&issue_id) else {
+            return PromiseOrValue::Value(());
+        };
+        let Some(pending) = issue.pending_payout.as_ref() else {
+            return PromiseOrValue::Value(());
+        };
+        let Some(proposal_id) = pending.proposal_id else {
+            return PromiseOrValue::Value(());
+        };
+
+        let promise = dao::ext_dao::ext(self.dao.clone())
+            .with_static_gas(near_sdk::Gas::from_gas(dao::GAS_FOR_ACT_PROPOSAL))
+            .act_proposal(
+                proposal_id,
+                Action::VoteApprove,
+                Some("BountyBoard auto-vote".to_string()),
+            )
+            .then(
+                ext_self::ext(env::current_account_id())
+                    .with_static_gas(near_sdk::Gas::from_gas(GAS_FOR_PAYOUT_CALLBACK))
+                    .on_payout_vote_result(issue_id),
+            );
+        PromiseOrValue::Promise(promise)
+    }
+
+    fn apply_payout_proposal_status(&mut self, issue_id: IssueId, status: ProposalStatus) {
+        match status {
+            ProposalStatus::InProgress => {}
+            ProposalStatus::Approved => self.mark_payout_pending(issue_id),
+            ProposalStatus::Rejected => {
+                self.reset_payout_to_merged(issue_id, "payout proposal rejected")
+            }
+            ProposalStatus::Removed => {
+                self.reset_payout_to_merged(issue_id, "payout proposal removed")
+            }
+            ProposalStatus::Expired => {
+                self.reset_payout_to_merged(issue_id, "payout proposal expired")
+            }
+            ProposalStatus::Moved => self.reset_payout_to_merged(issue_id, "payout proposal moved"),
+        }
+    }
+
+    fn mark_payout_pending(&mut self, issue_id: IssueId) {
+        if let Some(mut issue) = self.issues.get(&issue_id).cloned()
+            && issue.pending_payout.is_some()
+        {
+            issue.status = IssueStatus::PayoutPending;
+            issue.blocked_reason = None;
+            self.issues.insert(issue_id, issue);
+        }
+    }
+
+    fn set_payout_blocked(&mut self, issue_id: IssueId, reason: &str) {
+        if let Some(mut issue) = self.issues.get(&issue_id).cloned() {
+            issue.blocked_reason = Some(reason.to_string());
+            self.issues.insert(issue_id, issue);
+            events::payout_request_failed(issue_id, reason.to_string());
+        }
+    }
+
+    fn reset_payout_to_merged(&mut self, issue_id: IssueId, reason: &str) {
+        if let Some(mut issue) = self.issues.get(&issue_id).cloned() {
+            issue.status = IssueStatus::Merged;
+            issue.pending_payout = None;
+            issue.payout_proposal_id = None;
+            issue.blocked_reason = Some(reason.to_string());
+            self.issues.insert(issue_id, issue);
+            events::payout_request_failed(issue_id, reason.to_string());
+        }
+    }
+
     #[handle_result]
     pub fn add_repo(
         &mut self,
@@ -658,6 +1094,20 @@ impl BountyBoard {
     }
 }
 
+fn payout_proposal_kind(issue_id: IssueId, amount: u128) -> ProposalKind {
+    let args = near_sdk::serde_json::to_vec(&near_sdk::serde_json::json!({ "issue_id": issue_id }))
+        .unwrap_or_default();
+    ProposalKind::FunctionCall {
+        receiver_id: env::current_account_id(),
+        actions: vec![ActionCall {
+            method_name: "payout_near".to_string(),
+            args: Base64VecU8(args),
+            deposit: U128(amount),
+            gas: near_sdk::json_types::U64(GAS_FOR_PAYOUT),
+        }],
+    }
+}
+
 fn approved_status(issue: &Issue) -> IssueStatus {
     if issue.merge_proof.is_some() || issue.security.is_some() {
         IssueStatus::Merged
@@ -676,8 +1126,10 @@ fn paginate<T>(items: impl Iterator<Item = T>, from: u32, limit: u32) -> Vec<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dao::{Proposal, ProposalOutput, ProposalStatus};
     use crate::types::{
-        Approval, IssueKind, IssueStatus, ONE_NEAR, PayoutProof, PayoutStatus, Tier,
+        Approval, IssueKind, IssueStatus, MergeProof, MergeSource, ONE_NEAR, PayoutProof,
+        PayoutStatus, Tier,
     };
     use near_sdk::test_utils::{VMContextBuilder, accounts, get_logs};
     use near_sdk::testing_env;
@@ -791,6 +1243,8 @@ mod tests {
             security: None,
             s0: None,
             payout_id: None,
+            payout_proposal_id: None,
+            pending_payout: None,
             blocked_reason: None,
             cancelled_by: None,
             created_at: 0,
@@ -2098,5 +2552,359 @@ mod tests {
         assert_eq!(state.maintainers_len, 2);
         assert_eq!(state.threshold, 2);
         assert!(state.ended);
+    }
+    fn merged_public_issue(tier: Tier, amount: u128, approvals: Vec<Approval>) -> Issue {
+        let mut issue = sample_issue(IssueKind::PublicIssue, 7);
+        issue.tier = tier;
+        issue.amount = U128(amount);
+        issue.status = IssueStatus::Merged;
+        issue.creator = accounts(3);
+        issue.approvals = approvals;
+        issue.merge_proof = Some(MergeProof {
+            pr_number: 11,
+            pr_author: "alice".to_string(),
+            commit: "abc123".to_string(),
+            source: MergeSource::Oracle,
+            merged_at: 0,
+        });
+        issue
+    }
+
+    fn maintainer_approval(approver: AccountId) -> Approval {
+        Approval {
+            approver,
+            source: ApprovalSource::Maintainer,
+            at: 0,
+        }
+    }
+
+    fn pending_payout_issue() -> Issue {
+        let mut issue = merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]);
+        issue.status = IssueStatus::PayoutPending;
+        issue.payout_proposal_id = Some(7);
+        issue.pending_payout = Some(PendingPayout {
+            issue_id: 0,
+            recipient: accounts(4),
+            amount: U128(10),
+            proof_kind: CompletionKind::PullRequest,
+            proposal_id: Some(7),
+            proposal_kind: payout_proposal_kind(0, 10),
+        });
+        issue
+    }
+
+    #[test]
+    fn request_payout_rejects_s0_and_undisclosed_private_bounties() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+
+        let mut s0 = merged_public_issue(Tier::S0, 10, vec![]);
+        s0.amount = U128(10);
+        contract.issues.insert(1, s0);
+        assert_eq!(
+            contract.request_payout(1).err(),
+            Some(ContractError::InvalidState)
+        );
+
+        let mut private = sample_issue(IssueKind::PrivateSecurity, 2);
+        private.status = IssueStatus::Merged;
+        contract.issues.insert(2, private);
+        assert_eq!(
+            contract.request_payout(2).err(),
+            Some(ContractError::SecurityNotDisclosed)
+        );
+    }
+
+    #[test]
+    fn request_payout_rejects_unmerged_issue() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 7);
+        issue.status = IssueStatus::Approved;
+        contract.issues.insert(1, issue);
+
+        assert_eq!(
+            contract.request_payout(1).err(),
+            Some(ContractError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn request_payout_requires_linked_recipient() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]),
+        );
+
+        assert_eq!(
+            contract.request_payout(1).err(),
+            Some(ContractError::IdentityNotLinked)
+        );
+    }
+
+    #[test]
+    fn request_payout_requires_sufficient_approvals() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S1, 10, vec![maintainer_approval(accounts(1))]),
+        );
+
+        assert_eq!(
+            contract.request_payout(1).err(),
+            Some(ContractError::InsufficientApprovals)
+        );
+    }
+
+    #[test]
+    fn request_payout_requires_dao_proposal_bond() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        contract.dao_params.proposal_bond = U128(ONE_NEAR);
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]),
+        );
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(10);
+
+        assert_eq!(
+            contract.request_payout(1).err(),
+            Some(ContractError::InsufficientBond)
+        );
+    }
+
+    #[test]
+    fn request_payout_escalates_approver_who_is_the_recipient() {
+        let mut contract = contract_with_repo(vec![accounts(1), accounts(4)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(4))]),
+        );
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Escalated);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("final recipient conflicts with an approver")
+        );
+    }
+
+    #[test]
+    fn request_payout_escalates_s3_author_mismatch() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        let mut issue = merged_public_issue(
+            Tier::S3,
+            10,
+            vec![Approval {
+                approver: accounts(5),
+                source: ApprovalSource::AutoS3,
+                at: 0,
+            }],
+        );
+        issue.intended_contributor = Some(accounts(5));
+        contract.issues.insert(1, issue);
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Value(()))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Escalated);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("PR author does not match intended contributor")
+        );
+    }
+
+    #[test]
+    fn request_payout_records_recipient_and_proposal() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.identities.insert("alice".to_string(), accounts(4));
+        contract.issues.insert(
+            1,
+            merged_public_issue(Tier::S2, 10, vec![maintainer_approval(accounts(1))]),
+        );
+        contract.repos.get_mut(&REPO_ID).unwrap().committed = U128(10);
+
+        assert!(matches!(
+            contract.request_payout(1),
+            Ok(PromiseOrValue::Promise(_))
+        ));
+        let issue = contract.get_issue(1).unwrap();
+        assert_eq!(issue.status, IssueStatus::PayoutRequested);
+        let pending = issue.pending_payout.unwrap();
+        assert_eq!(pending.recipient, accounts(4));
+        assert_eq!(pending.amount, U128(10));
+        assert_eq!(pending.proof_kind, CompletionKind::PullRequest);
+        let ProposalKind::FunctionCall {
+            receiver_id,
+            actions,
+        } = pending.proposal_kind;
+        assert_eq!(receiver_id, env::current_account_id());
+        assert_eq!(actions[0].method_name, "payout_near");
+        assert_eq!(actions[0].deposit, U128(10));
+    }
+
+    #[test]
+    fn payout_proposal_created_sets_pending_and_starts_vote() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 7);
+        issue.status = IssueStatus::PayoutRequested;
+        issue.pending_payout = Some(PendingPayout {
+            issue_id: 0,
+            recipient: accounts(4),
+            amount: U128(10),
+            proof_kind: CompletionKind::PullRequest,
+            proposal_id: None,
+            proposal_kind: payout_proposal_kind(0, 10),
+        });
+        contract.issues.insert(0, issue);
+
+        assert!(matches!(
+            contract.on_payout_proposal_created(0, Ok(9)),
+            PromiseOrValue::Promise(_)
+        ));
+        let issue = contract.get_issue(0).unwrap();
+        assert_eq!(issue.status, IssueStatus::PayoutPending);
+        assert_eq!(issue.payout_proposal_id, Some(9));
+        assert_eq!(
+            issue
+                .pending_payout
+                .as_ref()
+                .and_then(|pending| pending.proposal_id),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn payout_proposal_creation_failure_reverts_to_merged() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 7);
+        issue.status = IssueStatus::PayoutRequested;
+        issue.pending_payout = Some(PendingPayout {
+            issue_id: 0,
+            recipient: accounts(4),
+            amount: U128(10),
+            proof_kind: CompletionKind::PullRequest,
+            proposal_id: None,
+            proposal_kind: payout_proposal_kind(0, 10),
+        });
+        contract.issues.insert(0, issue);
+
+        assert!(matches!(
+            contract.on_payout_proposal_created(0, Err(PromiseError::Failed)),
+            PromiseOrValue::Value(())
+        ));
+        let issue = contract.get_issue(0).unwrap();
+        assert_eq!(issue.status, IssueStatus::Merged);
+        assert!(issue.pending_payout.is_none());
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("DAO proposal creation failed")
+        );
+    }
+
+    #[test]
+    fn payout_vote_success_keeps_pending_and_emits_event() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(0, pending_payout_issue());
+
+        contract.on_payout_vote_result(0, Ok(()));
+
+        let issue = contract.get_issue(0).unwrap();
+        assert_eq!(issue.status, IssueStatus::PayoutPending);
+        assert!(issue.blocked_reason.is_none());
+        let logs = get_logs();
+        assert!(
+            logs.iter()
+                .any(|log| log.contains("\"event\":\"payout_requested\""))
+        );
+    }
+
+    #[test]
+    fn payout_vote_failure_sets_blocked_reason() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(0, pending_payout_issue());
+
+        contract.on_payout_vote_result(0, Err(PromiseError::Failed));
+
+        let issue = contract.get_issue(0).unwrap();
+        assert_eq!(issue.status, IssueStatus::PayoutPending);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("DAO auto-vote failed")
+        );
+        let logs = get_logs();
+        assert!(
+            logs.iter()
+                .any(|log| log.contains("\"event\":\"payout_request_failed\""))
+        );
+    }
+
+    #[test]
+    fn sync_payout_proposal_resets_terminal_status() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(0, pending_payout_issue());
+
+        contract.on_sync_payout_proposal(
+            0,
+            Ok(ProposalOutput {
+                id: 7,
+                proposal: Proposal {
+                    status: ProposalStatus::Rejected,
+                    kind: payout_proposal_kind(0, 10),
+                },
+            }),
+        );
+
+        let issue = contract.get_issue(0).unwrap();
+        assert_eq!(issue.status, IssueStatus::Merged);
+        assert!(issue.pending_payout.is_none());
+        assert_eq!(issue.payout_proposal_id, None);
+        assert_eq!(
+            issue.blocked_reason.as_deref(),
+            Some("payout proposal rejected")
+        );
+    }
+
+    #[test]
+    fn retry_payout_vote_votes_when_proposal_is_in_progress() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(0, pending_payout_issue());
+
+        assert!(matches!(
+            contract.on_retry_payout_proposal(
+                0,
+                Ok(ProposalOutput {
+                    id: 7,
+                    proposal: Proposal {
+                        status: ProposalStatus::InProgress,
+                        kind: payout_proposal_kind(0, 10),
+                    },
+                }),
+            ),
+            PromiseOrValue::Promise(_)
+        ));
+    }
+
+    #[test]
+    fn finalize_payout_proposal_requires_dao() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100, 25);
+        contract.issues.insert(0, pending_payout_issue());
+
+        set_predecessor(accounts(1));
+        assert_eq!(
+            contract.finalize_payout_proposal(0).err(),
+            Some(ContractError::NotDao)
+        );
+
+        set_predecessor(accounts(0));
+        assert!(contract.finalize_payout_proposal(0).is_ok());
     }
 }
