@@ -16,7 +16,6 @@ import {
 } from "./lib/near";
 import { buildPolicyFromEnv, type Policy } from "./lib/policy";
 
-const DAO_INITIAL_BALANCE = nearToYocto(2);
 const DAO_CALL_GAS = 200n * 1_000_000_000_000n;
 
 interface DaoConfig {
@@ -62,8 +61,9 @@ async function ensureAccount(
     );
   }
 
+  const initialBalance = nearToYocto(env.DAO_INITIAL_BALANCE_NEAR);
   console.log(
-    `Creating ${env.DAO_ACCOUNT} with ${DAO_INITIAL_BALANCE} yoctoNEAR`,
+    `Creating ${env.DAO_ACCOUNT} with ${initialBalance} yoctoNEAR`,
   );
   const publicKey = await publicKeyFromSecret(deployerSecret);
   const result = (await createSubaccount(
@@ -72,7 +72,7 @@ async function ensureAccount(
     deployerSecret,
     env.DAO_ACCOUNT,
     publicKey,
-    DAO_INITIAL_BALANCE,
+    initialBalance,
   )) as TxResult;
 
   console.log(`Account created: ${txHash(result)}`);

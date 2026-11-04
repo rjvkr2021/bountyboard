@@ -31,6 +31,8 @@ export const EnvSchema = z
     DAO_BOUNTY_FORGIVENESS_SECS: z.coerce.number().int().positive().default(86400),
     BOUNTYBOARD_WASM_PATH: z.string().optional(),
     MIN_DEPLOYER_BALANCE_NEAR: z.coerce.number().positive().default(5),
+    DAO_INITIAL_BALANCE_NEAR: z.coerce.number().positive().default(3.5),
+    BOUNTYBOARD_INITIAL_BALANCE_NEAR: z.coerce.number().positive().default(3),
     BOOTSTRAP_UNTIL_MAINTAINERS: z.coerce.number().int().positive().default(3),
     COUNCIL_PROMOTION_MIN_APPROVALS: z.coerce.number().int().positive().default(3),
     MAINTAINER_CHALLENGE_SECS: z.coerce.number().int().positive().default(604800),
@@ -117,6 +119,8 @@ export function summarizeEnv(env: Env): string {
     `COUNCIL_PROMOTION_MIN_APPROVALS=${env.COUNCIL_PROMOTION_MIN_APPROVALS}`,
     `COUNCIL_ROLE_NAME=${env.COUNCIL_ROLE_NAME}`,
     `MIN_DEPLOYER_BALANCE_NEAR=${env.MIN_DEPLOYER_BALANCE_NEAR}`,
+    `DAO_INITIAL_BALANCE_NEAR=${env.DAO_INITIAL_BALANCE_NEAR}`,
+    `BOUNTYBOARD_INITIAL_BALANCE_NEAR=${env.BOUNTYBOARD_INITIAL_BALANCE_NEAR}`,
   ].join("\n");
 }
 

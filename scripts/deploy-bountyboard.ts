@@ -17,7 +17,6 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_WASM = "contracts/bounty-board/target/near/bounty_board.wasm";
-const BOUNTYBOARD_INITIAL_BALANCE = nearToYocto(2);
 const INIT_GAS = 100n * 1_000_000_000_000n;
 
 interface BoardConfig {
@@ -74,8 +73,9 @@ async function ensureAccount(
     );
   }
 
+  const initialBalance = nearToYocto(env.BOUNTYBOARD_INITIAL_BALANCE_NEAR);
   console.log(
-    `Creating ${env.BOUNTYBOARD_ACCOUNT} with ${BOUNTYBOARD_INITIAL_BALANCE} yoctoNEAR`,
+    `Creating ${env.BOUNTYBOARD_ACCOUNT} with ${initialBalance} yoctoNEAR`,
   );
   const publicKey = await publicKeyFromSecret(deployerSecret);
   const result = (await createSubaccount(
@@ -84,7 +84,7 @@ async function ensureAccount(
     deployerSecret,
     env.BOUNTYBOARD_ACCOUNT,
     publicKey,
-    BOUNTYBOARD_INITIAL_BALANCE,
+    initialBalance,
   )) as TxResult;
   console.log(`Account created: ${txHash(result)}`);
 }
