@@ -322,6 +322,50 @@ impl BountyBoard {
     }
 
     #[handle_result]
+    pub fn bootstrap_approve(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        let maintainers_len = repo.maintainers.len() as u32;
+        if repo.bootstrap_ended || maintainers_len >= self.bootstrap_until_maintainers {
+            return Err(ContractError::InvalidState);
+        }
+
+        let mut issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?
+            .clone();
+        if issue.tier.is_s0()
+            || !matches!(
+                issue.status,
+                IssueStatus::PendingApproval | IssueStatus::Escalated
+            )
+        {
+            return Err(ContractError::InvalidState);
+        }
+
+        let status = approved_status(&issue);
+        issue.approvals.push(Approval {
+            approver: env::predecessor_account_id(),
+            source: ApprovalSource::BootstrapCouncil,
+            at: env::block_timestamp(),
+        });
+        issue.status = status;
+        self.issues.insert(issue_id, issue);
+        events::bounty_approved(
+            issue_id,
+            env::predecessor_account_id(),
+            ApprovalSource::BootstrapCouncil,
+            status,
+        );
+
+        Ok(())
+    }
+
+    #[handle_result]
     pub fn claim(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
         let caller = env::predecessor_account_id();
         let issue = self
@@ -1357,6 +1401,75 @@ mod tests {
         contract.council_approve(1).unwrap();
 
         assert_eq!(contract.issues.get(&1).unwrap().status, IssueStatus::Merged);
+    }
+
+    #[test]
+    fn bootstrap_approve_works_below_threshold_and_allows_self_approval() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 100 * ONE_NEAR);
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.creator = accounts(0);
+        contract.issues.insert(1, issue);
+        let mut escalated = sample_issue(IssueKind::PublicIssue, 2);
+        escalated.status = IssueStatus::Escalated;
+        contract.issues.insert(2, escalated);
+        set_predecessor(accounts(0));
+
+        contract.bootstrap_approve(1).unwrap();
+        contract.bootstrap_approve(2).unwrap();
+
+        let issue = contract.issues.get(&1).unwrap();
+        assert_eq!(issue.status, IssueStatus::Approved);
+        assert_eq!(issue.approvals[0].source, ApprovalSource::BootstrapCouncil);
+        assert_eq!(issue.approvals[0].approver, accounts(0));
+        assert_eq!(contract.unconflicted_approvals(issue), 0);
+        assert_eq!(
+            contract.issues.get(&2).unwrap().status,
+            IssueStatus::Approved
+        );
+    }
+
+    #[test]
+    fn bootstrap_approve_rejects_threshold_reached_or_ended() {
+        let mut at_threshold = contract_with_repo(
+            vec![accounts(1), accounts(3), accounts(4)],
+            100 * ONE_NEAR,
+            100 * ONE_NEAR,
+        );
+        at_threshold
+            .issues
+            .insert(1, sample_issue(IssueKind::PublicIssue, 1));
+        set_predecessor(accounts(0));
+        assert_eq!(
+            at_threshold.bootstrap_approve(1),
+            Err(ContractError::InvalidState)
+        );
+
+        let mut ended = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 100 * ONE_NEAR);
+        ended.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+        ended
+            .issues
+            .insert(1, sample_issue(IssueKind::PublicIssue, 1));
+        set_predecessor(accounts(0));
+        assert_eq!(ended.bootstrap_approve(1), Err(ContractError::InvalidState));
+    }
+
+    #[test]
+    fn bootstrap_approve_requires_dao_and_open_status() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 100 * ONE_NEAR);
+        let mut approved = sample_issue(IssueKind::PublicIssue, 1);
+        approved.status = IssueStatus::Approved;
+        contract.issues.insert(1, approved);
+        contract
+            .issues
+            .insert(2, sample_issue(IssueKind::PublicIssue, 2));
+
+        set_predecessor(accounts(1));
+        assert_eq!(contract.bootstrap_approve(2), Err(ContractError::NotDao));
+        set_predecessor(accounts(0));
+        assert_eq!(
+            contract.bootstrap_approve(1),
+            Err(ContractError::InvalidState)
+        );
     }
 
     #[test]
