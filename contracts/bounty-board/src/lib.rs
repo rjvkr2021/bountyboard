@@ -188,6 +188,80 @@ impl BountyBoard {
         Ok(issue_id)
     }
 
+    fn is_conflicted(&self, issue: &Issue, maintainer: &AccountId) -> bool {
+        if &issue.creator == maintainer || issue.claimants.contains(maintainer) {
+            return true;
+        }
+        if let Some(proof) = &issue.merge_proof {
+            if self
+                .identities
+                .get(&proof.pr_author)
+                .is_some_and(|account| account == maintainer)
+            {
+                return true;
+            }
+        }
+        if let Some(security) = &issue.security {
+            if self
+                .identities
+                .get(&security.researcher_github)
+                .is_some_and(|account| account == maintainer)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn unconflicted_approvals(&self, issue: &Issue) -> u32 {
+        issue
+            .approvals
+            .iter()
+            .filter(|approval| {
+                approval.source == ApprovalSource::Maintainer
+                    && !self.is_conflicted(issue, &approval.approver)
+            })
+            .count() as u32
+    }
+
+    #[handle_result]
+    pub fn approve(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
+        let caller = env::predecessor_account_id();
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_maintainer(repo, &caller)?;
+
+        let mut issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?
+            .clone();
+        if issue.status != IssueStatus::PendingApproval {
+            return Err(ContractError::InvalidState);
+        }
+        if issue.approvals.iter().any(|item| item.approver == caller)
+            || self.is_conflicted(&issue, &caller)
+        {
+            return Err(ContractError::Conflict);
+        }
+
+        issue.approvals.push(Approval {
+            approver: caller.clone(),
+            source: ApprovalSource::Maintainer,
+            at: env::block_timestamp(),
+        });
+        if self.unconflicted_approvals(&issue) >= issue.tier.required_maintainer_approvals() {
+            issue.status = approved_status(&issue);
+        }
+        let status = issue.status;
+        self.issues.insert(issue_id, issue);
+        events::bounty_approved(issue_id, caller, ApprovalSource::Maintainer, status);
+
+        Ok(())
+    }
+
     #[handle_result]
     pub fn claim(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
         let caller = env::predecessor_account_id();
@@ -393,6 +467,14 @@ impl BountyBoard {
             .get(&private_ref)
             .and_then(|issue_id| self.issues.get(issue_id))
             .cloned()
+    }
+}
+
+fn approved_status(issue: &Issue) -> IssueStatus {
+    if issue.merge_proof.is_some() || issue.security.is_some() {
+        IssueStatus::Merged
+    } else {
+        IssueStatus::Approved
     }
 }
 
@@ -929,6 +1011,139 @@ mod tests {
         set_predecessor(accounts(1));
 
         assert_eq!(contract.claim(1), Err(ContractError::ClaimantLimitReached));
+    }
+
+    fn three_maintainer_contract() -> BountyBoard {
+        contract_with_repo(
+            vec![accounts(1), accounts(3), accounts(4)],
+            100 * ONE_NEAR,
+            100 * ONE_NEAR,
+        )
+    }
+
+    #[test]
+    fn approve_records_distinct_maintainers_and_uses_tier_threshold() {
+        let mut contract = three_maintainer_contract();
+        set_predecessor(accounts(1));
+
+        let s1 = contract
+            .create_bounty(1, Tier::S1, U128(3 * ONE_NEAR), None)
+            .unwrap();
+        set_predecessor(accounts(3));
+        contract.approve(s1).unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::PendingApproval
+        );
+        set_predecessor(accounts(4));
+        contract.approve(s1).unwrap();
+        assert_eq!(
+            contract.issues.get(&s1).unwrap().status,
+            IssueStatus::Approved
+        );
+
+        set_predecessor(accounts(1));
+        let s2 = contract
+            .create_bounty(2, Tier::S2, U128(3 * ONE_NEAR), None)
+            .unwrap();
+        set_predecessor(accounts(3));
+        contract.approve(s2).unwrap();
+        assert_eq!(
+            contract.issues.get(&s2).unwrap().status,
+            IssueStatus::Approved
+        );
+
+        set_predecessor(accounts(1));
+        let s3 = contract
+            .create_bounty(3, Tier::S3, U128(3 * ONE_NEAR), None)
+            .unwrap();
+        set_predecessor(accounts(4));
+        contract.approve(s3).unwrap();
+        assert_eq!(
+            contract.issues.get(&s3).unwrap().status,
+            IssueStatus::Approved
+        );
+    }
+
+    #[test]
+    fn approve_rejects_self_claimant_duplicate_and_non_maintainer() {
+        let mut contract = three_maintainer_contract();
+        set_predecessor(accounts(1));
+        let issue_id = contract
+            .create_bounty(1, Tier::S2, U128(ONE_NEAR), None)
+            .unwrap();
+
+        assert_eq!(contract.approve(issue_id), Err(ContractError::Conflict));
+
+        set_predecessor(accounts(3));
+        contract.claim(issue_id).unwrap();
+        assert_eq!(contract.approve(issue_id), Err(ContractError::Conflict));
+
+        set_predecessor(accounts(3));
+        let second = contract
+            .create_bounty(2, Tier::S2, U128(ONE_NEAR), None)
+            .unwrap();
+        set_predecessor(accounts(1));
+        contract.approve(second).unwrap();
+        assert_eq!(contract.approve(second), Err(ContractError::InvalidState));
+
+        set_predecessor(accounts(1));
+        let third = contract
+            .create_bounty(3, Tier::S2, U128(ONE_NEAR), None)
+            .unwrap();
+        set_predecessor(accounts(5));
+        assert_eq!(contract.approve(third), Err(ContractError::NotMaintainer));
+    }
+
+    #[test]
+    fn approve_rejects_pr_author_and_researcher_conflicts() {
+        let mut contract = three_maintainer_contract();
+        contract.identities.insert("alice".to_string(), accounts(3));
+        contract
+            .identities
+            .insert("researcher".to_string(), accounts(4));
+
+        let mut public = sample_issue(IssueKind::PublicIssue, 1);
+        public.merge_proof = Some(crate::types::MergeProof {
+            pr_number: 5,
+            pr_author: "alice".to_string(),
+            commit: "abc".to_string(),
+            source: crate::types::MergeSource::Manual,
+            merged_at: 1,
+        });
+        contract.issues.insert(1, public);
+        set_predecessor(accounts(3));
+        assert_eq!(contract.approve(1), Err(ContractError::Conflict));
+
+        let mut private = sample_issue(IssueKind::PrivateSecurity, 2);
+        private.security = Some(crate::types::SecurityDisclosure {
+            ghsa_id: "GHSA-xxxx-yyyy-zzzz".to_string(),
+            advisory_url: "https://example.com/advisory".to_string(),
+            researcher_github: "researcher".to_string(),
+            disclosed_at: 1,
+        });
+        contract.issues.insert(2, private);
+        set_predecessor(accounts(4));
+        assert_eq!(contract.approve(2), Err(ContractError::Conflict));
+    }
+
+    #[test]
+    fn approve_returns_merged_when_completion_proof_exists() {
+        let mut contract = three_maintainer_contract();
+        contract.identities.insert("bob".to_string(), accounts(4));
+        let mut issue = sample_issue(IssueKind::PublicIssue, 1);
+        issue.merge_proof = Some(crate::types::MergeProof {
+            pr_number: 5,
+            pr_author: "bob".to_string(),
+            commit: "abc".to_string(),
+            source: crate::types::MergeSource::Oracle,
+            merged_at: 1,
+        });
+        contract.issues.insert(1, issue);
+        set_predecessor(accounts(3));
+
+        contract.approve(1).unwrap();
+        assert_eq!(contract.issues.get(&1).unwrap().status, IssueStatus::Merged);
     }
 
     #[test]

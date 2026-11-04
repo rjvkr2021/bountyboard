@@ -45,6 +45,15 @@ pub struct BountyCreated {
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyApproved {
+    pub issue_id: IssueId,
+    pub approver: AccountId,
+    pub source: crate::types::ApprovalSource,
+    pub status: IssueStatus,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BountyClaimed {
     pub issue_id: IssueId,
     pub claimant: AccountId,
@@ -109,6 +118,23 @@ pub fn repo_paused(repo_id: RepoId, paused: bool) {
 
 pub fn bounty_claimed(issue_id: IssueId, claimant: AccountId) {
     emit("bounty_claimed", &BountyClaimed { issue_id, claimant });
+}
+
+pub fn bounty_approved(
+    issue_id: IssueId,
+    approver: AccountId,
+    source: crate::types::ApprovalSource,
+    status: IssueStatus,
+) {
+    emit(
+        "bounty_approved",
+        &BountyApproved {
+            issue_id,
+            approver,
+            source,
+            status,
+        },
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
