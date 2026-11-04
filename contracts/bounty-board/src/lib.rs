@@ -121,6 +121,22 @@ impl BountyBoard {
         Ok(())
     }
 
+    #[handle_result]
+    pub fn set_budget(&mut self, repo_id: RepoId, amount: U128) -> Result<(), ContractError> {
+        access::assert_dao(self)?;
+
+        let repo = self
+            .repos
+            .get_mut(&repo_id)
+            .ok_or(ContractError::RepoNotFound)?;
+        if amount.0 < repo.committed {
+            return Err(ContractError::BudgetBelowCommitted);
+        }
+        repo.budget = amount.0;
+
+        Ok(())
+    }
+
     pub fn get_config(&self) -> BoardConfig {
         BoardConfig {
             bootstrap_until_maintainers: self.bootstrap_until_maintainers,
@@ -553,5 +569,48 @@ mod tests {
             )
             .unwrap();
         assert!(second.get_repo().unwrap().bootstrap_ended);
+    }
+
+    #[test]
+    fn set_budget_requires_dao() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+        set_predecessor(accounts(1));
+
+        assert_eq!(
+            contract.set_budget(REPO_ID, U128(100)),
+            Err(ContractError::NotDao)
+        );
+    }
+
+    #[test]
+    fn set_budget_requires_existing_repo() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        set_predecessor(accounts(0));
+
+        assert_eq!(
+            contract.set_budget(REPO_ID, U128(100)),
+            Err(ContractError::RepoNotFound)
+        );
+    }
+
+    #[test]
+    fn set_budget_cannot_drop_below_committed() {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        contract.repos.insert(REPO_ID, sample_repo());
+        set_predecessor(accounts(0));
+
+        assert_eq!(
+            contract.set_budget(REPO_ID, U128(39)),
+            Err(ContractError::BudgetBelowCommitted)
+        );
+        assert_eq!(contract.get_repo().unwrap().budget, 100);
+
+        contract.set_budget(REPO_ID, U128(40)).unwrap();
+        assert_eq!(contract.get_repo().unwrap().budget, 40);
+        assert_eq!(contract.get_budget().unwrap().available, U128(0));
     }
 }
