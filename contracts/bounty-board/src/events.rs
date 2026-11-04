@@ -54,6 +54,14 @@ pub struct BountyApproved {
 
 #[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpamMarked {
+    pub issue_id: IssueId,
+    pub maintainer: AccountId,
+    pub released: U128,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BountyClaimed {
     pub issue_id: IssueId,
     pub claimant: AccountId,
@@ -118,6 +126,17 @@ pub fn repo_paused(repo_id: RepoId, paused: bool) {
 
 pub fn bounty_claimed(issue_id: IssueId, claimant: AccountId) {
     emit("bounty_claimed", &BountyClaimed { issue_id, claimant });
+}
+
+pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
+    emit(
+        "spam_marked",
+        &SpamMarked {
+            issue_id,
+            maintainer,
+            released: U128(released),
+        },
+    );
 }
 
 pub fn bounty_approved(

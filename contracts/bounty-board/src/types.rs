@@ -230,6 +230,7 @@ pub struct Issue {
     pub s0: Option<S0State>,
     pub payout_id: Option<PayoutId>,
     pub blocked_reason: Option<String>,
+    pub cancelled_by: Option<AccountId>,
     pub created_at: Timestamp,
 }
 
@@ -522,6 +523,7 @@ mod tests {
             s0: None,
             payout_id: None,
             blocked_reason: None,
+            cancelled_by: None,
             created_at: 0,
         }
     }

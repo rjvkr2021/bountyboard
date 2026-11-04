@@ -154,6 +154,7 @@ impl BountyBoard {
             s0: None,
             payout_id: None,
             blocked_reason: None,
+            cancelled_by: None,
             created_at: now,
         };
         let repo = self
@@ -361,6 +362,49 @@ impl BountyBoard {
             ApprovalSource::BootstrapCouncil,
             status,
         );
+
+        Ok(())
+    }
+
+    #[handle_result]
+    pub fn mark_spam(&mut self, issue_id: IssueId) -> Result<(), ContractError> {
+        let caller = env::predecessor_account_id();
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_maintainer(repo, &caller)?;
+
+        let mut issue = self
+            .issues
+            .get(&issue_id)
+            .ok_or(ContractError::IssueNotFound)?
+            .clone();
+        if issue.kind != IssueKind::PublicIssue || issue.tier.is_s0() {
+            return Err(ContractError::InvalidState);
+        }
+        if !matches!(
+            issue.status,
+            IssueStatus::PendingApproval | IssueStatus::Approved | IssueStatus::Escalated
+        ) {
+            return Err(ContractError::InvalidState);
+        }
+
+        let released = issue.amount;
+        issue.status = IssueStatus::Cancelled;
+        issue.cancelled_by = Some(caller.clone());
+
+        let repo = self
+            .repos
+            .get_mut(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        repo.committed = repo
+            .committed
+            .checked_sub(released)
+            .ok_or(ContractError::StorageError)?;
+
+        self.issues.insert(issue_id, issue);
+        events::spam_marked(issue_id, caller, released);
 
         Ok(())
     }
@@ -707,6 +751,7 @@ mod tests {
             s0: None,
             payout_id: None,
             blocked_reason: None,
+            cancelled_by: None,
             created_at: 0,
         }
     }
@@ -1470,6 +1515,51 @@ mod tests {
             contract.bootstrap_approve(1),
             Err(ContractError::InvalidState)
         );
+    }
+
+    #[test]
+    fn mark_spam_cancels_before_merge_and_releases_commitment() {
+        let mut contract = three_maintainer_contract();
+        set_predecessor(accounts(1));
+        let issue_id = contract
+            .create_bounty(1, Tier::S2, U128(10 * ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(
+            contract.repos.get(&REPO_ID).unwrap().committed,
+            10 * ONE_NEAR
+        );
+
+        set_predecessor(accounts(3));
+        contract.mark_spam(issue_id).unwrap();
+
+        let issue = contract.issues.get(&issue_id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Cancelled);
+        assert_eq!(issue.cancelled_by, Some(accounts(3)));
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, 0);
+        assert_eq!(
+            contract.mark_spam(issue_id),
+            Err(ContractError::InvalidState)
+        );
+    }
+
+    #[test]
+    fn mark_spam_rejects_s0_private_and_post_merge_issues() {
+        let mut contract = three_maintainer_contract();
+        let mut s0 = sample_issue(IssueKind::PublicIssue, 1);
+        s0.tier = Tier::S0;
+        let mut merged = sample_issue(IssueKind::PublicIssue, 2);
+        merged.status = IssueStatus::Merged;
+        let private = sample_issue(IssueKind::PrivateSecurity, 3);
+        contract.issues.insert(1, s0);
+        contract.issues.insert(2, merged);
+        contract.issues.insert(3, private);
+
+        set_predecessor(accounts(3));
+        assert_eq!(contract.mark_spam(1), Err(ContractError::InvalidState));
+        assert_eq!(contract.mark_spam(2), Err(ContractError::InvalidState));
+        assert_eq!(contract.mark_spam(3), Err(ContractError::InvalidState));
+        set_predecessor(accounts(5));
+        assert_eq!(contract.mark_spam(2), Err(ContractError::NotMaintainer));
     }
 
     #[test]

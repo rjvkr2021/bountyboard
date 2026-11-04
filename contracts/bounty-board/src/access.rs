@@ -130,6 +130,7 @@ mod tests {
             s0: None,
             payout_id: None,
             blocked_reason: None,
+            cancelled_by: None,
             created_at: 0,
         }
     }
