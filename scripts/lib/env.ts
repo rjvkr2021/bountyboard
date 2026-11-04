@@ -25,6 +25,10 @@ export const EnvSchema = z
     GITHUB_REPO_NAME: z.string().optional(),
     TREASURY_BUDGET_NEAR: z.coerce.number().positive().default(100),
     BOUNTYBOARD_RESERVE_NEAR: z.coerce.number().nonnegative().default(10),
+    DAO_PROPOSAL_BOND_NEAR: z.coerce.number().nonnegative().default(1),
+    DAO_BOUNTY_BOND_NEAR: z.coerce.number().nonnegative().default(1),
+    DAO_PROPOSAL_PERIOD_SECS: z.coerce.number().int().positive().default(604800),
+    DAO_BOUNTY_FORGIVENESS_SECS: z.coerce.number().int().positive().default(86400),
   })
   .passthrough();
 
@@ -74,6 +78,10 @@ export function summarizeEnv(env: Env): string {
     `DEPLOYER_PRIVATE_KEY=${maskSecret(env.DEPLOYER_PRIVATE_KEY)}`,
     `TREASURY_BUDGET_NEAR=${env.TREASURY_BUDGET_NEAR}`,
     `BOUNTYBOARD_RESERVE_NEAR=${env.BOUNTYBOARD_RESERVE_NEAR}`,
+    `DAO_PROPOSAL_BOND_NEAR=${env.DAO_PROPOSAL_BOND_NEAR}`,
+    `DAO_BOUNTY_BOND_NEAR=${env.DAO_BOUNTY_BOND_NEAR}`,
+    `DAO_PROPOSAL_PERIOD_SECS=${env.DAO_PROPOSAL_PERIOD_SECS}`,
+    `DAO_BOUNTY_FORGIVENESS_SECS=${env.DAO_BOUNTY_FORGIVENESS_SECS}`,
   ].join("\n");
 }
 
