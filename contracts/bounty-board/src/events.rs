@@ -2,7 +2,7 @@ use near_sdk::json_types::U128;
 use near_sdk::{AccountId, env, near};
 use serde::Serialize;
 
-use crate::types::RepoId;
+use crate::types::{IssueId, IssueStatus, RepoId, Tier};
 
 pub const EVENT_STANDARD: &str = "bountyboard";
 pub const EVENT_VERSION: &str = "1.0.0";
@@ -29,6 +29,18 @@ pub struct RepoBudgetSet {
 pub struct RepoPaused {
     pub repo_id: RepoId,
     pub paused: bool,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BountyCreated {
+    pub issue_id: IssueId,
+    pub issue_number: u64,
+    pub tier: Tier,
+    pub amount: U128,
+    pub creator: AccountId,
+    pub contributor: Option<AccountId>,
+    pub status: IssueStatus,
 }
 
 #[derive(Serialize)]
@@ -86,6 +98,30 @@ pub fn repo_budget_set(repo_id: RepoId, budget: u128, committed: u128) {
 
 pub fn repo_paused(repo_id: RepoId, paused: bool) {
     emit("repo_paused", &RepoPaused { repo_id, paused });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn bounty_created(
+    issue_id: IssueId,
+    issue_number: u64,
+    tier: Tier,
+    amount: u128,
+    creator: AccountId,
+    contributor: Option<AccountId>,
+    status: IssueStatus,
+) {
+    emit(
+        "bounty_created",
+        &BountyCreated {
+            issue_id,
+            issue_number,
+            tier,
+            amount: U128(amount),
+            creator,
+            contributor,
+            status,
+        },
+    );
 }
 
 #[cfg(test)]

@@ -14,9 +14,9 @@ pub mod validation;
 use crate::errors::ContractError;
 use crate::state::StorageKey;
 use crate::types::{
-    BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest, DEFAULT_DAILY_CAP_YOCTO,
-    DaoParams, Issue, IssueId, MaintainerRecord, PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo,
-    RepoId, Reputation,
+    BoardConfig, BootstrapState, BudgetView, Candidate, CouncilRequest, DAY_SECS,
+    DEFAULT_DAILY_CAP_YOCTO, DaoParams, Issue, IssueId, IssueKind, IssueStatus, MaintainerRecord,
+    PayoutId, PayoutRecord, PrivateRef, REPO_ID, Repo, RepoId, Reputation, Tier,
 };
 
 #[near(contract_state)]
@@ -77,6 +77,91 @@ impl BountyBoard {
 
     pub fn get_dao(&self) -> AccountId {
         self.dao.clone()
+    }
+
+    #[handle_result]
+    pub fn create_bounty(
+        &mut self,
+        issue_number: u64,
+        tier: Tier,
+        amount: U128,
+        contributor: Option<AccountId>,
+    ) -> Result<IssueId, ContractError> {
+        let creator = env::predecessor_account_id();
+        let repo = self
+            .repos
+            .get(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        access::assert_maintainer(repo, &creator)?;
+        validation::validate_tier(tier)?;
+        validation::validate_amount(amount.0)?;
+
+        if self.issue_by_number.contains_key(&(REPO_ID, issue_number)) {
+            return Err(ContractError::DuplicateIssueNumber);
+        }
+        access::assert_repo_open(repo)?;
+        validation::assert_budget_available(repo, amount.0)?;
+
+        let now = env::block_timestamp();
+        let day = now / (DAY_SECS * 1_000_000_000);
+        let daily_key = (day, creator.clone());
+        let mut spent = 0;
+        if matches!(tier, Tier::S2 | Tier::S3) {
+            spent = self.daily_spend.get(&daily_key).copied().unwrap_or(0);
+            validation::assert_daily_cap(repo, spent, amount.0)?;
+        }
+
+        let issue_id = self.next_issue_id;
+        self.next_issue_id += 1;
+        let issue = Issue {
+            repo_id: REPO_ID,
+            kind: IssueKind::PublicIssue,
+            issue_number: Some(issue_number),
+            private_ref: None,
+            tier,
+            amount: amount.0,
+            status: IssueStatus::PendingApproval,
+            creator: creator.clone(),
+            claimants: Vec::new(),
+            approvals: Vec::new(),
+            intended_contributor: contributor.clone(),
+            merge_proof: None,
+            security: None,
+            s0: None,
+            payout_id: None,
+            blocked_reason: None,
+            created_at: now,
+        };
+        self.issues.insert(issue_id, issue);
+        self.issue_by_number
+            .insert((REPO_ID, issue_number), issue_id);
+
+        let repo = self
+            .repos
+            .get_mut(&REPO_ID)
+            .ok_or(ContractError::RepoNotFound)?;
+        repo.committed = repo
+            .committed
+            .checked_add(amount.0)
+            .ok_or(ContractError::BudgetExceeded)?;
+        if matches!(tier, Tier::S2 | Tier::S3) {
+            let total = spent
+                .checked_add(amount.0)
+                .ok_or(ContractError::DailyCapExceeded)?;
+            self.daily_spend.insert(daily_key, total);
+        }
+
+        events::bounty_created(
+            issue_id,
+            issue_number,
+            tier,
+            amount.0,
+            creator,
+            contributor,
+            IssueStatus::PendingApproval,
+        );
+
+        Ok(issue_id)
     }
 
     #[handle_result]
@@ -271,7 +356,9 @@ fn paginate<T>(items: impl Iterator<Item = T>, from: u32, limit: u32) -> Vec<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Approval, IssueKind, IssueStatus, PayoutProof, PayoutStatus, Tier};
+    use crate::types::{
+        Approval, IssueKind, IssueStatus, ONE_NEAR, PayoutProof, PayoutStatus, Tier,
+    };
     use near_sdk::test_utils::{VMContextBuilder, accounts};
     use near_sdk::testing_env;
 
@@ -387,6 +474,128 @@ mod tests {
             blocked_reason: None,
             created_at: 0,
         }
+    }
+
+    fn contract_with_repo(
+        maintainers: Vec<AccountId>,
+        budget: u128,
+        daily_cap: u128,
+    ) -> BountyBoard {
+        context();
+        let mut contract = BountyBoard::new(accounts(0), None);
+        let mut records = BTreeMap::new();
+        for maintainer in maintainers {
+            records.insert(
+                maintainer,
+                MaintainerRecord {
+                    since: 0,
+                    bounties_approved: 0,
+                    last_council_request_at: 0,
+                },
+            );
+        }
+        contract.repos.insert(
+            REPO_ID,
+            Repo {
+                github_repo: "owner/repo".to_string(),
+                maintainers: records,
+                oracle: accounts(2),
+                budget,
+                committed: 0,
+                daily_cap,
+                paused: false,
+                bootstrap_ended: false,
+            },
+        );
+        contract
+    }
+
+    #[test]
+    fn create_bounty_stores_public_issue_and_commits_budget() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        set_predecessor(accounts(1));
+
+        let issue_id = contract
+            .create_bounty(7, Tier::S2, U128(10 * ONE_NEAR), None)
+            .unwrap();
+
+        let issue = contract.get_issue_by_number(7).unwrap();
+        assert_eq!(issue_id, 0);
+        assert_eq!(issue.kind, IssueKind::PublicIssue);
+        assert_eq!(issue.issue_number, Some(7));
+        assert_eq!(issue.status, IssueStatus::PendingApproval);
+        assert_eq!(issue.amount, 10 * ONE_NEAR);
+        assert_eq!(issue.creator, accounts(1));
+        assert_eq!(
+            contract.repos.get(&REPO_ID).unwrap().committed,
+            10 * ONE_NEAR
+        );
+        assert_eq!(
+            contract.daily_spend.get(&(0, accounts(1))),
+            Some(&(10 * ONE_NEAR))
+        );
+    }
+
+    #[test]
+    fn create_bounty_rejects_duplicate_issue_number() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        set_predecessor(accounts(1));
+
+        contract.create_bounty(7, Tier::S2, U128(1), None).unwrap();
+        assert_eq!(
+            contract.create_bounty(7, Tier::S3, U128(1), None),
+            Err(ContractError::DuplicateIssueNumber)
+        );
+    }
+
+    #[test]
+    fn create_bounty_rejects_paused_repo() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        contract.repos.get_mut(&REPO_ID).unwrap().paused = true;
+        set_predecessor(accounts(1));
+
+        assert_eq!(
+            contract.create_bounty(7, Tier::S2, U128(ONE_NEAR), None),
+            Err(ContractError::RepoPaused)
+        );
+    }
+
+    #[test]
+    fn create_bounty_enforces_budget_daily_cap_and_tier_rules() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 10 * ONE_NEAR, 5 * ONE_NEAR);
+        set_predecessor(accounts(1));
+
+        assert_eq!(
+            contract.create_bounty(1, Tier::S0, U128(ONE_NEAR), None),
+            Err(ContractError::S0NotEnabled)
+        );
+        assert_eq!(
+            contract.create_bounty(1, Tier::S2, U128(0), None),
+            Err(ContractError::InvalidAmount)
+        );
+        assert_eq!(
+            contract.create_bounty(1, Tier::S2, U128(11 * ONE_NEAR), None),
+            Err(ContractError::BudgetExceeded)
+        );
+        assert_eq!(
+            contract.create_bounty(1, Tier::S2, U128(6 * ONE_NEAR), None),
+            Err(ContractError::DailyCapExceeded)
+        );
+        assert_eq!(
+            contract.create_bounty(1, Tier::S1, U128(6 * ONE_NEAR), None),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn create_bounty_requires_maintainer() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 25 * ONE_NEAR);
+        set_predecessor(accounts(5));
+
+        assert_eq!(
+            contract.create_bounty(7, Tier::S2, U128(ONE_NEAR), None),
+            Err(ContractError::NotMaintainer)
+        );
     }
 
     #[test]
