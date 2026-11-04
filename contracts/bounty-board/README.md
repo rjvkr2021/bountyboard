@@ -21,7 +21,10 @@ cd contracts/bounty-board
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo near build non-reproducible-wasm
 ```
+
+These four commands are the required checks for every contract change.
 
 ## Deploy
 
