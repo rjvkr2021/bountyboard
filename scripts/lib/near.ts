@@ -37,7 +37,9 @@ export function readOnlyAccount(env: Env, accountId: string): Account {
   return new Account(accountId, rpcProvider(env));
 }
 
-export async function view<T extends SerializedReturnValue>(
+export async function view<
+  T extends SerializedReturnValue = SerializedReturnValue,
+>(
   env: Env,
   contractId: string,
   method: string,
@@ -88,6 +90,14 @@ export async function accountExists(
 export async function getBalance(env: Env, accountId: string): Promise<bigint> {
   const state = await rpcProvider(env).viewAccount({ accountId });
   return state.amount;
+}
+
+export async function hasContractCode(
+  env: Env,
+  contractId: string,
+): Promise<boolean> {
+  const code = await rpcProvider(env).viewContractCode({ contractId });
+  return code.code_base64.length > 0;
 }
 
 export async function createSubaccount(
