@@ -1,5 +1,7 @@
 use near_sdk::{AccountId, PanicOnDefault, near};
 
+pub mod types;
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct BountyBoard {
