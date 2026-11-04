@@ -642,7 +642,7 @@ mod tests {
     use crate::types::{
         Approval, IssueKind, IssueStatus, ONE_NEAR, PayoutProof, PayoutStatus, Tier,
     };
-    use near_sdk::test_utils::{VMContextBuilder, accounts};
+    use near_sdk::test_utils::{VMContextBuilder, accounts, get_logs};
     use near_sdk::testing_env;
 
     fn context() {
@@ -1614,6 +1614,40 @@ mod tests {
         assert!(!json.contains("ghsa_id"));
         assert!(!json.contains("advisory_url"));
         assert!(!json.contains("researcher_github"));
+    }
+
+    fn count_event(event: &str) -> usize {
+        let needle = format!("\"event\":\"{event}\"");
+        get_logs()
+            .iter()
+            .filter(|log| log.contains(&needle))
+            .count()
+    }
+
+    #[test]
+    fn repeated_calls_do_not_duplicate_events() {
+        let mut contract = three_maintainer_contract();
+        set_predecessor(accounts(1));
+        let issue_id = contract
+            .create_bounty(1, Tier::S2, U128(ONE_NEAR), None)
+            .unwrap();
+        assert_eq!(count_event("bounty_created"), 1);
+
+        set_predecessor(accounts(3));
+        contract.claim(issue_id).unwrap();
+        contract.claim(issue_id).unwrap();
+        assert_eq!(count_event("bounty_claimed"), 1);
+
+        set_predecessor(accounts(4));
+        contract.approve(issue_id).unwrap();
+        assert_eq!(count_event("bounty_approved"), 1);
+        assert!(contract.approve(issue_id).is_err());
+        assert_eq!(count_event("bounty_approved"), 1);
+
+        contract.mark_spam(issue_id).unwrap();
+        assert_eq!(count_event("spam_marked"), 1);
+        assert!(contract.mark_spam(issue_id).is_err());
+        assert_eq!(count_event("spam_marked"), 1);
     }
 
     #[test]

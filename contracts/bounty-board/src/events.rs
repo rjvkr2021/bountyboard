@@ -213,6 +213,82 @@ mod tests {
     }
 
     #[test]
+    fn bounty_created_event_shape() {
+        let log = event_json(
+            "bounty_created",
+            &BountyCreated {
+                issue_id: 1,
+                issue_number: 7,
+                tier: Tier::S3,
+                amount: U128(10),
+                creator: accounts(1),
+                contributor: Some(accounts(2)),
+                status: IssueStatus::Approved,
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "bounty_created");
+        assert_eq!(value["data"]["issue_id"], 1);
+        assert_eq!(value["data"]["issue_number"], 7);
+        assert_eq!(value["data"]["tier"], "S3");
+        assert_eq!(value["data"]["amount"], "10");
+        assert_eq!(value["data"]["contributor"], accounts(2).to_string());
+        assert_eq!(value["data"]["status"], "Approved");
+    }
+
+    #[test]
+    fn bounty_approved_event_shape() {
+        let log = event_json(
+            "bounty_approved",
+            &BountyApproved {
+                issue_id: 1,
+                approver: accounts(1),
+                source: crate::types::ApprovalSource::Maintainer,
+                status: IssueStatus::Approved,
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "bounty_approved");
+        assert_eq!(value["data"]["approver"], accounts(1).to_string());
+        assert_eq!(value["data"]["source"], "Maintainer");
+        assert_eq!(value["data"]["status"], "Approved");
+    }
+
+    #[test]
+    fn bounty_claimed_event_shape() {
+        let log = event_json(
+            "bounty_claimed",
+            &BountyClaimed {
+                issue_id: 1,
+                claimant: accounts(1),
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "bounty_claimed");
+        assert_eq!(value["data"]["claimant"], accounts(1).to_string());
+    }
+
+    #[test]
+    fn spam_marked_event_shape() {
+        let log = event_json(
+            "spam_marked",
+            &SpamMarked {
+                issue_id: 1,
+                maintainer: accounts(1),
+                released: U128(10),
+            },
+        );
+        let value = parse_event(&log);
+
+        assert_eq!(value["event"], "spam_marked");
+        assert_eq!(value["data"]["maintainer"], accounts(1).to_string());
+        assert_eq!(value["data"]["released"], "10");
+    }
+
+    #[test]
     fn repo_budget_event_uses_u128_strings() {
         let log = event_json(
             "repo_budget_set",
