@@ -20,9 +20,10 @@ pub fn validate_amount(amount: u128) -> Result<(), ContractError> {
 pub fn assert_budget_available(repo: &Repo, amount: u128) -> Result<(), ContractError> {
     let committed = repo
         .committed
+        .0
         .checked_add(amount)
         .ok_or(ContractError::BudgetExceeded)?;
-    if committed > repo.budget {
+    if committed > repo.budget.0 {
         Err(ContractError::BudgetExceeded)
     } else {
         Ok(())
@@ -33,7 +34,7 @@ pub fn assert_daily_cap(repo: &Repo, spent: u128, amount: u128) -> Result<(), Co
     let total = spent
         .checked_add(amount)
         .ok_or(ContractError::DailyCapExceeded)?;
-    if total > repo.daily_cap {
+    if total > repo.daily_cap.0 {
         Err(ContractError::DailyCapExceeded)
     } else {
         Ok(())
@@ -44,6 +45,7 @@ pub fn assert_daily_cap(repo: &Repo, spent: u128, amount: u128) -> Result<(), Co
 mod tests {
     use super::*;
     use crate::types::MaintainerRecord;
+    use near_sdk::json_types::U128;
     use near_sdk::test_utils::accounts;
     use std::collections::BTreeMap;
 
@@ -61,9 +63,9 @@ mod tests {
             github_repo: "owner/repo".to_string(),
             maintainers,
             oracle: accounts(2),
-            budget,
-            committed,
-            daily_cap,
+            budget: U128(budget),
+            committed: U128(committed),
+            daily_cap: U128(daily_cap),
             paused: false,
             bootstrap_ended: false,
         }

@@ -143,7 +143,7 @@ impl BountyBoard {
             issue_number: Some(issue_number),
             private_ref: None,
             tier,
-            amount: amount.0,
+            amount,
             status,
             creator: creator.clone(),
             claimants: Vec::new(),
@@ -161,10 +161,12 @@ impl BountyBoard {
             .repos
             .get_mut(&REPO_ID)
             .ok_or(ContractError::RepoNotFound)?;
-        repo.committed = repo
-            .committed
-            .checked_add(amount.0)
-            .ok_or(ContractError::BudgetExceeded)?;
+        repo.committed = U128(
+            repo.committed
+                .0
+                .checked_add(amount.0)
+                .ok_or(ContractError::BudgetExceeded)?,
+        );
         if matches!(tier, Tier::S2 | Tier::S3) {
             let total = spent
                 .checked_add(amount.0)
@@ -199,23 +201,21 @@ impl BountyBoard {
         if &issue.creator == maintainer || issue.claimants.contains(maintainer) {
             return true;
         }
-        if let Some(proof) = &issue.merge_proof {
-            if self
+        if let Some(proof) = &issue.merge_proof
+            && self
                 .identities
                 .get(&proof.pr_author)
                 .is_some_and(|account| account == maintainer)
-            {
-                return true;
-            }
+        {
+            return true;
         }
-        if let Some(security) = &issue.security {
-            if self
+        if let Some(security) = &issue.security
+            && self
                 .identities
                 .get(&security.researcher_github)
                 .is_some_and(|account| account == maintainer)
-            {
-                return true;
-            }
+        {
+            return true;
         }
         false
     }
@@ -390,7 +390,7 @@ impl BountyBoard {
             return Err(ContractError::InvalidState);
         }
 
-        let released = issue.amount;
+        let released = issue.amount.0;
         issue.status = IssueStatus::Cancelled;
         issue.cancelled_by = Some(caller.clone());
 
@@ -398,10 +398,12 @@ impl BountyBoard {
             .repos
             .get_mut(&REPO_ID)
             .ok_or(ContractError::RepoNotFound)?;
-        repo.committed = repo
-            .committed
-            .checked_sub(released)
-            .ok_or(ContractError::StorageError)?;
+        repo.committed = U128(
+            repo.committed
+                .0
+                .checked_sub(released)
+                .ok_or(ContractError::StorageError)?,
+        );
 
         self.issues.insert(issue_id, issue);
         events::spam_marked(issue_id, caller, released);
@@ -469,9 +471,9 @@ impl BountyBoard {
                 github_repo: github_repo.clone(),
                 maintainers: records,
                 oracle: oracle.clone(),
-                budget: 0,
-                committed: 0,
-                daily_cap: DEFAULT_DAILY_CAP_YOCTO,
+                budget: U128(0),
+                committed: U128(0),
+                daily_cap: U128(DEFAULT_DAILY_CAP_YOCTO),
                 paused: false,
                 bootstrap_ended,
             },
@@ -489,11 +491,11 @@ impl BountyBoard {
             .repos
             .get_mut(&repo_id)
             .ok_or(ContractError::RepoNotFound)?;
-        if amount.0 < repo.committed {
+        if amount.0 < repo.committed.0 {
             return Err(ContractError::BudgetBelowCommitted);
         }
-        repo.budget = amount.0;
-        let committed = repo.committed;
+        repo.budget = amount;
+        let committed = repo.committed.0;
         events::repo_budget_set(repo_id, amount.0, committed);
 
         Ok(())
@@ -530,10 +532,10 @@ impl BountyBoard {
 
     pub fn get_budget(&self) -> Option<BudgetView> {
         self.repos.get(&REPO_ID).map(|repo| BudgetView {
-            budget: U128(repo.budget),
-            committed: U128(repo.committed),
-            available: U128(repo.budget.saturating_sub(repo.committed)),
-            daily_cap: U128(repo.daily_cap),
+            budget: repo.budget,
+            committed: repo.committed,
+            available: U128(repo.budget.0.saturating_sub(repo.committed.0)),
+            daily_cap: repo.daily_cap,
             paused: repo.paused,
         })
     }
@@ -721,9 +723,9 @@ mod tests {
             github_repo: "owner/repo".to_string(),
             maintainers,
             oracle: accounts(2),
-            budget: 100,
-            committed: 40,
-            daily_cap: 25,
+            budget: U128(100),
+            committed: U128(40),
+            daily_cap: U128(25),
             paused: false,
             bootstrap_ended: false,
         }
@@ -744,7 +746,7 @@ mod tests {
                 None
             },
             tier: Tier::S2,
-            amount: 10,
+            amount: U128(10),
             status: IssueStatus::PendingApproval,
             creator: accounts(0),
             claimants: Vec::new(),
@@ -784,9 +786,9 @@ mod tests {
                 github_repo: "owner/repo".to_string(),
                 maintainers: records,
                 oracle: accounts(2),
-                budget,
-                committed: 0,
-                daily_cap,
+                budget: U128(budget),
+                committed: U128(0),
+                daily_cap: U128(daily_cap),
                 paused: false,
                 bootstrap_ended: false,
             },
@@ -799,7 +801,7 @@ mod tests {
             account,
             Reputation {
                 completed,
-                total_earned: 0,
+                total_earned: U128(0),
                 points: 0,
                 has_s1_or_s0: false,
                 payout_ids: Vec::new(),
@@ -895,11 +897,11 @@ mod tests {
         assert_eq!(issue.kind, IssueKind::PublicIssue);
         assert_eq!(issue.issue_number, Some(7));
         assert_eq!(issue.status, IssueStatus::PendingApproval);
-        assert_eq!(issue.amount, 10 * ONE_NEAR);
+        assert_eq!(issue.amount, U128(10 * ONE_NEAR));
         assert_eq!(issue.creator, accounts(1));
         assert_eq!(
             contract.repos.get(&REPO_ID).unwrap().committed,
-            10 * ONE_NEAR
+            U128(10 * ONE_NEAR)
         );
         assert_eq!(
             contract.daily_spend.get(&(0, accounts(1))),
@@ -1070,7 +1072,7 @@ mod tests {
             PayoutRecord {
                 issue_id: 1,
                 recipient: accounts(3),
-                amount: 10,
+                amount: U128(10),
                 tier: Tier::S2,
                 points: 3,
                 status: PayoutStatus::Paid,
@@ -1530,7 +1532,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             contract.repos.get(&REPO_ID).unwrap().committed,
-            10 * ONE_NEAR
+            U128(10 * ONE_NEAR)
         );
 
         set_predecessor(accounts(3));
@@ -1539,7 +1541,7 @@ mod tests {
         let issue = contract.issues.get(&issue_id).unwrap();
         assert_eq!(issue.status, IssueStatus::Cancelled);
         assert_eq!(issue.cancelled_by, Some(accounts(3)));
-        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, 0);
+        assert_eq!(contract.repos.get(&REPO_ID).unwrap().committed, U128(0));
         assert_eq!(
             contract.mark_spam(issue_id),
             Err(ContractError::InvalidState)
@@ -1753,9 +1755,9 @@ mod tests {
         let repo = contract.get_repo().unwrap();
         assert_eq!(repo.github_repo, "owner/repo");
         assert_eq!(repo.oracle, accounts(3));
-        assert_eq!(repo.budget, 0);
-        assert_eq!(repo.committed, 0);
-        assert_eq!(repo.daily_cap, DEFAULT_DAILY_CAP_YOCTO);
+        assert_eq!(repo.budget, U128(0));
+        assert_eq!(repo.committed, U128(0));
+        assert_eq!(repo.daily_cap, U128(DEFAULT_DAILY_CAP_YOCTO));
         assert!(!repo.paused);
         assert!(!repo.bootstrap_ended);
 
@@ -1839,10 +1841,10 @@ mod tests {
             contract.set_budget(REPO_ID, U128(39)),
             Err(ContractError::BudgetBelowCommitted)
         );
-        assert_eq!(contract.get_repo().unwrap().budget, 100);
+        assert_eq!(contract.get_repo().unwrap().budget, U128(100));
 
         contract.set_budget(REPO_ID, U128(40)).unwrap();
-        assert_eq!(contract.get_repo().unwrap().budget, 40);
+        assert_eq!(contract.get_repo().unwrap().budget, U128(40));
         assert_eq!(contract.get_budget().unwrap().available, U128(0));
     }
 
@@ -1899,15 +1901,15 @@ mod tests {
         let mut contract = BountyBoard::new(accounts(0), None);
 
         let mut repo = sample_repo();
-        repo.budget = 100;
-        repo.committed = 0;
+        repo.budget = U128(100);
+        repo.committed = U128(0);
         contract.repos.insert(REPO_ID, repo);
         let budget = contract.get_budget().unwrap();
         assert_eq!(budget.available, U128(100));
 
         let mut repo = sample_repo();
-        repo.budget = 100;
-        repo.committed = 40;
+        repo.budget = U128(100);
+        repo.committed = U128(40);
         contract.repos.insert(REPO_ID, repo);
         let budget = contract.get_budget().unwrap();
         assert_eq!(budget.budget, U128(100));
@@ -1917,14 +1919,14 @@ mod tests {
         assert!(!budget.paused);
 
         let mut repo = sample_repo();
-        repo.budget = 100;
-        repo.committed = 100;
+        repo.budget = U128(100);
+        repo.committed = U128(100);
         contract.repos.insert(REPO_ID, repo);
         assert_eq!(contract.get_budget().unwrap().available, U128(0));
 
         let mut repo = sample_repo();
-        repo.budget = 100;
-        repo.committed = 120;
+        repo.budget = U128(100);
+        repo.committed = U128(120);
         contract.repos.insert(REPO_ID, repo);
         assert_eq!(contract.get_budget().unwrap().available, U128(0));
     }

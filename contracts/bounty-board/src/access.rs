@@ -72,6 +72,7 @@ pub fn assert_disclosed(issue: &Issue) -> Result<(), ContractError> {
 mod tests {
     use super::*;
     use crate::types::{Approval, BoardConfig, MaintainerRecord, Repo, SecurityDisclosure, Tier};
+    use near_sdk::json_types::U128;
     use near_sdk::test_utils::{VMContextBuilder, accounts};
     use near_sdk::testing_env;
     use std::collections::BTreeMap;
@@ -96,9 +97,9 @@ mod tests {
             github_repo: "owner/repo".to_string(),
             maintainers,
             oracle,
-            budget: 0,
-            committed: 0,
-            daily_cap: 0,
+            budget: U128(0),
+            committed: U128(0),
+            daily_cap: U128(0),
             paused: false,
             bootstrap_ended: false,
         }
@@ -119,7 +120,7 @@ mod tests {
                 None
             },
             tier: Tier::S1,
-            amount: 1,
+            amount: U128(1),
             status,
             creator: accounts(0),
             claimants: Vec::new(),
