@@ -1651,6 +1651,52 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_state_uses_stored_ended_flag_after_maintainer_changes() {
+        let mut contract = contract_with_repo(vec![accounts(1)], 100 * ONE_NEAR, 100 * ONE_NEAR);
+        assert_eq!(
+            contract.get_bootstrap_state(),
+            BootstrapState {
+                active: true,
+                maintainers_len: 1,
+                threshold: 3,
+                ended: false,
+            }
+        );
+
+        contract.repos.get_mut(&REPO_ID).unwrap().bootstrap_ended = true;
+        assert_eq!(
+            contract.get_bootstrap_state(),
+            BootstrapState {
+                active: false,
+                maintainers_len: 1,
+                threshold: 3,
+                ended: true,
+            }
+        );
+
+        let repo = contract.repos.get_mut(&REPO_ID).unwrap();
+        for account in [accounts(3), accounts(4)] {
+            repo.maintainers.insert(
+                account,
+                MaintainerRecord {
+                    since: 0,
+                    bounties_approved: 0,
+                    last_council_request_at: 0,
+                },
+            );
+        }
+        assert_eq!(
+            contract.get_bootstrap_state(),
+            BootstrapState {
+                active: false,
+                maintainers_len: 3,
+                threshold: 3,
+                ended: true,
+            }
+        );
+    }
+
+    #[test]
     fn add_repo_requires_dao() {
         context();
         let mut contract = BountyBoard::new(accounts(0), None);
