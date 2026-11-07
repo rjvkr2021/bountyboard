@@ -52,33 +52,6 @@ export class IdentityService {
       );
   }
 
-  private assertCooldown(
-    githubUserId: number,
-    nearAccount: string,
-    existing: IdentityRecord | null,
-    now: Date,
-  ): void {
-    let baseline: string | null = null;
-    if (existing) {
-      if (existing.nearAccount === nearAccount) return;
-      baseline = existing.linkedAt;
-    } else {
-      baseline = this.store.getIdentityUnlinkedAt(githubUserId);
-    }
-
-    const cooldown = this.config.identity.relinkCooldownSecs;
-    if (!baseline || cooldown <= 0) return;
-
-    const elapsedSeconds = Math.floor((now.getTime() - Date.parse(baseline)) / 1_000);
-    if (elapsedSeconds < cooldown) {
-      const remaining = cooldown - Math.max(0, elapsedSeconds);
-      throw new IdentityError(
-        409,
-        `Wait ${remaining} more second${remaining === 1 ? "" : "s"} before changing the linked NEAR account`,
-      );
-    }
-  }
-
   private async linkBoard(
     deployment: PlatformDeployment,
     input: LinkIdentityInput,
@@ -164,8 +137,6 @@ export class IdentityService {
       throw new IdentityError(409, "That NEAR account is already linked to another GitHub identity");
     }
 
-    this.assertCooldown(input.githubUserId, nearAccount, existing, now);
-
     if (existing && existing.nearAccount !== nearAccount) {
       for (const deployment of this.activeBoards()) {
         await this.unlinkBoard(deployment, existing);
@@ -186,7 +157,6 @@ export class IdentityService {
       linkedAt: existing?.linkedAt ?? nowIso,
       updatedAt: nowIso,
     });
-    await this.store.clearIdentityUnlink(input.githubUserId);
     return identity;
   }
 
@@ -207,7 +177,6 @@ export class IdentityService {
     if (!removed) {
       throw new IdentityError(404, "This GitHub account has no linked NEAR account");
     }
-    await this.store.markIdentityUnlinked(input.githubUserId, this.now().toISOString());
     return removed;
   }
 }

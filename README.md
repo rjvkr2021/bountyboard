@@ -137,8 +137,7 @@ to list eligible public repositories and verify admin access. The current adapte
 
 `PLATFORM_ORACLE_PRIVATE_KEY` is required for self-service identity links and
 also links the founder identity during launch. Production must use KMS instead.
-`PLATFORM_IDENTITY_RELINK_COOLDOWN_SECS` controls the cooldown before changing
-or re-linking an identity; it defaults to `86400`.
+Changing or re-linking an identity has no cooldown.
 
 ## Contract
 

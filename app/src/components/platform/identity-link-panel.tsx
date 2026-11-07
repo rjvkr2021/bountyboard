@@ -348,8 +348,8 @@ export function IdentityLinkPanel({ network }: { network: "testnet" | "mainnet" 
 
       {identity ? (
         <p className="text-muted">
-          Last updated {new Date(identity.updatedAt).toLocaleString()}. Changing the linked account
-          is subject to the platform re-link cooldown.
+          Last updated {new Date(identity.updatedAt).toLocaleString()}. You can change or unlink the
+          linked account at any time.
         </p>
       ) : null}
     </div>

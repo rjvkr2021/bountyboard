@@ -27,7 +27,6 @@ export function emptyData(): PlatformData {
     boards: {},
     issues: {},
     identities: {},
-    identityUnlinks: {},
     events: [],
     cursors: {},
     meta: { createdAt: now, updatedAt: now },
@@ -35,10 +34,11 @@ export function emptyData(): PlatformData {
 }
 
 export function normalizePlatformData(
-  parsed: PlatformData & { users?: unknown },
+  parsed: PlatformData & { users?: unknown; identityUnlinks?: unknown },
 ): PlatformData {
-  const data = { ...parsed };
+  const data: PlatformData & { users?: unknown; identityUnlinks?: unknown } = { ...parsed };
   delete data.users;
+  delete data.identityUnlinks;
   const normalized = {
     ...emptyData(),
     ...data,
@@ -236,22 +236,6 @@ export class FilePlatformStore implements PlatformStoreApi {
       if (!entry) return null;
       delete data.identities[entry[0]];
       return entry[1];
-    });
-  }
-
-  markIdentityUnlinked(githubUserId: number, at: string): void {
-    this.mutate((data) => {
-      data.identityUnlinks[String(githubUserId)] = at;
-    });
-  }
-
-  getIdentityUnlinkedAt(githubUserId: number): string | null {
-    return this.data.identityUnlinks[String(githubUserId)] ?? null;
-  }
-
-  clearIdentityUnlink(githubUserId: number): void {
-    this.mutate((data) => {
-      delete data.identityUnlinks[String(githubUserId)];
     });
   }
 

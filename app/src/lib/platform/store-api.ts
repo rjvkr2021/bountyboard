@@ -36,9 +36,6 @@ export interface PlatformStore {
 
   upsertIdentity(identity: IdentityRecord): IdentityRecord | Promise<IdentityRecord>;
   removeIdentity(githubUserId: number): IdentityRecord | null | Promise<IdentityRecord | null>;
-  markIdentityUnlinked(githubUserId: number, at: string): void | Promise<void>;
-  getIdentityUnlinkedAt(githubUserId: number): string | null;
-  clearIdentityUnlink(githubUserId: number): void | Promise<void>;
   getIdentityByLogin(login: string): IdentityRecord | null;
   getIdentityByUserId(githubUserId: number): IdentityRecord | null;
   getIdentityByNearAccount(accountId: string): IdentityRecord | null;

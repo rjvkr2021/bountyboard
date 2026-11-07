@@ -398,13 +398,9 @@ export default function DocsPage() {
                   <li>One GitHub identity maps to one NEAR account at a time.</li>
                   <li>One NEAR account cannot be linked to multiple GitHub identities.</li>
                   <li>Numeric GitHub IDs survive handle renames; handles alone are not stable.</li>
-                  <li>Changing the linked account requires a fresh NEP-413 signature. Unlinking only requires your signed-in GitHub session; changing or re-linking after an unlink is limited by the platform cooldown.</li>
+                  <li>Changing the linked account requires a fresh NEP-413 signature. Unlinking only requires your signed-in GitHub session, and you can re-link immediately.</li>
                 </ul>
               </div>
-              <Note>
-                The default re-link cooldown is 24 hours. Operators can change it with
-                <code className="ml-1 font-mono text-[11px]">PLATFORM_IDENTITY_RELINK_COOLDOWN_SECS</code>.
-              </Note>
             </div>
           </SectionCard>
 

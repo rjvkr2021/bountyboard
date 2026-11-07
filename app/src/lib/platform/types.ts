@@ -200,7 +200,6 @@ export interface PlatformData {
   boards: Record<string, BoardSnapshot>;
   issues: Record<string, IssueSnapshot>;
   identities: Record<string, IdentityRecord>;
-  identityUnlinks: Record<string, string>;
   events: PlatformEvent[];
   cursors: Record<string, IndexerCursor>;
   meta: {

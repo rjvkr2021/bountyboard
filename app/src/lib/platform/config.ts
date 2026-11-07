@@ -52,9 +52,6 @@ export interface PlatformConfig {
     baseUrl: string;
     secret: string;
   };
-  identity: {
-    relinkCooldownSecs: number;
-  };
 }
 
 export function getPlatformConfig(): PlatformConfig {
@@ -109,9 +106,6 @@ export function getPlatformConfig(): PlatformConfig {
       databaseUrl: env("DATABASE_URL", ""),
       baseUrl: env("BETTER_AUTH_URL", ""),
       secret: env("BETTER_AUTH_SECRET", ""),
-    },
-    identity: {
-      relinkCooldownSecs: envInt("PLATFORM_IDENTITY_RELINK_COOLDOWN_SECS", 86_400),
     },
   };
 }

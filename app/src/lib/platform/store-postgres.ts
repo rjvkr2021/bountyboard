@@ -188,19 +188,6 @@ export class PostgresPlatformStore implements PlatformStore {
       return entry[1];
     });
   }
-  async markIdentityUnlinked(githubUserId: number, at: string): Promise<void> {
-    await this.mutate((data) => {
-      data.identityUnlinks[String(githubUserId)] = at;
-    });
-  }
-  getIdentityUnlinkedAt(githubUserId: number): string | null {
-    return this.data.identityUnlinks[String(githubUserId)] ?? null;
-  }
-  async clearIdentityUnlink(githubUserId: number): Promise<void> {
-    await this.mutate((data) => {
-      delete data.identityUnlinks[String(githubUserId)];
-    });
-  }
   getIdentityByLogin(login: string): IdentityRecord | null {
     const normalized = login.toLowerCase();
     return Object.values(this.data.identities).find(

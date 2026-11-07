@@ -226,8 +226,8 @@ Flow:
 Rules:
 
 - One GitHub user ID maps to one NEAR account at a time; one NEAR account maps to one GitHub user ID.
-- Changing a link requires a cooldown and a fresh NEP-413 signature.
-- Unlinking only requires the signed-in GitHub session and does not reopen a wallet connection.
+- Changing a link requires a fresh NEP-413 signature.
+- Unlinking only requires the signed-in GitHub session and does not reopen a wallet connection; re-linking has no cooldown.
 - Prevent handle squatting by keying on numeric IDs.
 - Add abuse signals: GitHub account age, verified email, and rate limits.
 - Never store GitHub access tokens in logs; encrypt if persisted.

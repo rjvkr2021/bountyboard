@@ -117,7 +117,6 @@ Optional NEAR settings:
 | Variable | Default |
 | --- | --- |
 | `PLATFORM_ORACLE_PRIVATE_KEY` | empty; required for self-service identity links and founder linking during launch |
-| `PLATFORM_IDENTITY_RELINK_COOLDOWN_SECS` | `86400`; cooldown before changing or re-linking an identity |
 | `PLATFORM_DAO_PROPOSAL_BOND_NEAR` | `1` |
 | `PLATFORM_DAO_BOUNTY_BOND_NEAR` | `1` |
 | `PLATFORM_DAO_PROPOSAL_PERIOD_SECS` | `604800` |
@@ -315,15 +314,14 @@ Self-service linking works through `POST /identity/challenge` and
    selected NEAR account, the app recipient, and a 32-byte nonce.
 3. The browser wallet signs the NEP-413 message.
 4. The server verifies the signature and the wallet's full-access key over RPC.
-5. The service enforces global uniqueness and the re-link cooldown, then the
-   oracle calls `link_identity_with_id` on every active board.
+5. The service enforces global uniqueness, then the oracle calls
+   `link_identity_with_id` on every active board.
 6. The global identity record is updated and shown in `/account#identity`.
 
 Unlinking is authorized by the signed-in GitHub session (`DELETE /identity`) and
 calls `unlink_identity` on every active board; it does not require a wallet
-connection or a fresh signature. Changing or re-linking is limited by
-`PLATFORM_IDENTITY_RELINK_COOLDOWN_SECS`. Abuse signals, shared rate limits, and
-the KMS-backed oracle path remain open.
+connection or a fresh signature. Changing or re-linking has no cooldown. Abuse
+signals, shared rate limits, and the KMS-backed oracle path remain open.
 
 ## Contribution flow
 
@@ -398,8 +396,8 @@ npm run test:e2e
 Platform tests cover request-origin checks, repository persistence, naming,
 GitHub admin verification, policy construction, launch orchestration with
 injected verifier and adapter doubles, identity challenge signing and
-expiry, identity link/rotate/unlink and cooldown behavior with an injected
-chain, merged-PR verification and oracle merge-proof writes, and indexer
+expiry, identity link/rotate/unlink behavior with an injected chain,
+merged-PR verification and oracle merge-proof writes, and indexer
 reconciliation. Better
 Auth and Postgres integration is exercised through the HTTP smoke path. Contract behavior is covered by Rust
 unit tests and the sandbox platform-hardening suite.

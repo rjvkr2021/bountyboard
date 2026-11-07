@@ -71,14 +71,13 @@ const deployment: PlatformDeployment = {
   updatedAt: now,
 };
 
-function setup(options: { cooldown?: number; seedDeployment?: boolean } = {}) {
+function setup(options: { seedDeployment?: boolean } = {}) {
   const store = new FilePlatformStore(
     join(mkdtempSync(join(tmpdir(), "platform-identity-")), "data.json"),
   );
   if (options.seedDeployment !== false) store.insertDeployment(deployment);
   let current = new Date("2026-01-01T00:00:00.000Z");
   const config = getPlatformConfig();
-  config.identity.relinkCooldownSecs = options.cooldown ?? 0;
   config.near.oraclePrivateKey = "ed25519:test";
   const chain = new TestChain();
   const service = new IdentityService(store, config, {
@@ -137,7 +136,7 @@ describe("IdentityService", () => {
     ).rejects.toThrow(/already linked/);
   });
 
-  it("unlinks the identity from every active board and records a cooldown", async () => {
+  it("unlinks the identity from every active board", async () => {
     const { service, store, chain } = setup();
     await service.link({
       githubUserId: 42,
@@ -154,7 +153,6 @@ describe("IdentityService", () => {
 
     expect(removed.nearAccount).toBe("alice.testnet");
     expect(store.getIdentityByUserId(42)).toBeNull();
-    expect(store.getIdentityUnlinkedAt(42)).toBe("2026-01-01T00:00:00.000Z");
     expect(chain.calls[0]).toMatchObject({
       signer: deployment.oracleAccount,
       contractId: deployment.boardAccount,
@@ -163,25 +161,23 @@ describe("IdentityService", () => {
     });
   });
 
-  it("enforces the re-link cooldown when changing the NEAR account", async () => {
-    const { service, advance } = setup({ cooldown: 60 });
+  it("changes or re-links the NEAR account immediately after an unlink", async () => {
+    const { service, store, chain } = setup();
     await service.link({
       githubUserId: 42,
       githubLogin: "alice",
       nearAccount: "alice.testnet",
     });
+    chain.viewResult = "alice.testnet";
+    await service.unlink({ githubUserId: 42, nearAccount: "alice.testnet" });
 
-    advance(10);
-    await expect(
-      service.link({ githubUserId: 42, githubLogin: "alice", nearAccount: "alice2.testnet" }),
-    ).rejects.toThrow(/Wait 50 more seconds/);
-
-    advance(60);
     const identity = await service.link({
       githubUserId: 42,
       githubLogin: "alice",
       nearAccount: "alice2.testnet",
     });
+
     expect(identity.nearAccount).toBe("alice2.testnet");
+    expect(store.getIdentityByUserId(42)?.nearAccount).toBe("alice2.testnet");
   });
 });
