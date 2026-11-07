@@ -25,3 +25,5 @@ dist/
 # OS / editor noise
 .DS_Store
 *.swp
+# Vercel local project link
+.vercel
