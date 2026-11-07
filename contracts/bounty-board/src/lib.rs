@@ -2413,7 +2413,7 @@ impl BountyBoard {
             .unwrap_or_default();
         if !record
             .closed_by_tier
-            .add(contributions)
+            .saturating_add(contributions)
             .meets(COUNCIL_TIER_REQUIREMENTS)
         {
             return Err(ContractError::InsufficientTierHistory);
@@ -3016,11 +3016,11 @@ fn paginate<T>(items: impl Iterator<Item = T>, from: u32, limit: u32) -> Vec<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::TierCounts;
     use crate::dao::{
         BountyStatus, Proposal, ProposalOutput, ProposalStatus, RoleKind, RolePermission,
         VotePolicy, WeightKind, WeightOrRatio,
     };
+    use crate::types::TierCounts;
     use crate::types::{
         Approval, IssueKind, IssueStatus, MergeProof, MergeSource, ONE_NEAR, PayoutProof,
         PayoutStatus, SecurityDisclosure, Tier, WEEK_SECS,

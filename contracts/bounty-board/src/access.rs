@@ -183,7 +183,10 @@ mod tests {
     #[test]
     fn council_access() {
         let mut repo = sample_repo(accounts(2), accounts(1));
-        assert_eq!(assert_council(&repo, &accounts(1)), Err(ContractError::NotCouncil));
+        assert_eq!(
+            assert_council(&repo, &accounts(1)),
+            Err(ContractError::NotCouncil)
+        );
         if let Some(record) = repo.maintainers.get_mut(&accounts(1)) {
             record.council_derived = true;
         }

@@ -119,7 +119,7 @@ impl TierCounts {
         }
     }
 
-    pub fn add(self, other: Self) -> Self {
+    pub fn saturating_add(self, other: Self) -> Self {
         Self {
             s0: self.s0.saturating_add(other.s0),
             s1: self.s1.saturating_add(other.s1),
