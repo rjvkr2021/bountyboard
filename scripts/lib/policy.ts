@@ -1,7 +1,3 @@
-import { nearToYocto } from "near-api-js";
-
-import type { Env } from "./env";
-
 export type WeightKind = "RoleWeight" | "TokenWeight";
 
 export type RoleKind =
@@ -73,7 +69,14 @@ export function secsToNs(seconds: number): string {
 }
 
 export function nearToYoctoString(amount: number): string {
-  return nearToYocto(amount).toString();
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Invalid NEAR amount");
+  }
+  const [whole = "0", fraction = ""] = amount.toString().split(".");
+  return `${BigInt(whole)}${fraction.padEnd(24, "0").slice(0, 24)}`.replace(
+    /^0+(?=\d)/,
+    "",
+  );
 }
 
 export function ratio(numerator: number, denominator: number): [number, number] {
@@ -128,19 +131,4 @@ export function buildPolicy(params: PolicyParams): Policy {
     bounty_bond: nearToYoctoString(params.bountyBondNear),
     bounty_forgiveness_period: secsToNs(params.bountyForgivenessPeriodSecs),
   };
-}
-
-export function policyParamsFromEnv(env: Env): PolicyParams {
-  return {
-    founder: env.FOUNDER_ACCOUNT,
-    bountyboard: env.BOUNTYBOARD_ACCOUNT,
-    proposalBondNear: env.DAO_PROPOSAL_BOND_NEAR,
-    bountyBondNear: env.DAO_BOUNTY_BOND_NEAR,
-    proposalPeriodSecs: env.DAO_PROPOSAL_PERIOD_SECS,
-    bountyForgivenessPeriodSecs: env.DAO_BOUNTY_FORGIVENESS_SECS,
-  };
-}
-
-export function buildPolicyFromEnv(env: Env): Policy {
-  return buildPolicy(policyParamsFromEnv(env));
 }

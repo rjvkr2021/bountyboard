@@ -43,16 +43,12 @@ mod tests {
 
     fn repo(budget: u128, committed: u128, daily_cap: u128) -> Repo {
         let mut maintainers = BTreeMap::new();
-        maintainers.insert(
-            accounts(1),
-            MaintainerRecord {
-                since: 0,
-                bounties_approved: 0,
-                last_council_request_at: 0,
-            },
-        );
+        maintainers.insert(accounts(1), MaintainerRecord::new(0));
         Repo {
             github_repo: "owner/repo".to_string(),
+            github_repo_id: 0,
+            verification_source: "legacy".to_string(),
+            created_at: 0,
             maintainers,
             oracle: accounts(2),
             budget: U128(budget),

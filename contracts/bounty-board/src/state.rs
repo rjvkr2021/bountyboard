@@ -9,6 +9,8 @@ pub enum StorageKey {
     PrivateRefs,
     Identities,
     AccountIdentities,
+    GithubUserIds,
+    AccountGithubUserIds,
     Reputation,
     Payouts,
     Candidates,

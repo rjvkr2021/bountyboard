@@ -28,6 +28,18 @@ pub fn assert_maintainer(repo: &Repo, account: &AccountId) -> Result<(), Contrac
     }
 }
 
+pub fn assert_council(repo: &Repo, account: &AccountId) -> Result<(), ContractError> {
+    if repo
+        .maintainers
+        .get(account)
+        .is_some_and(|record| record.council_derived)
+    {
+        Ok(())
+    } else {
+        Err(ContractError::NotCouncil)
+    }
+}
+
 pub fn assert_repo_open(repo: &Repo) -> Result<(), ContractError> {
     if repo.paused {
         Err(ContractError::RepoPaused)
@@ -85,16 +97,12 @@ mod tests {
 
     fn sample_repo(oracle: AccountId, maintainer: AccountId) -> Repo {
         let mut maintainers = BTreeMap::new();
-        maintainers.insert(
-            maintainer,
-            MaintainerRecord {
-                since: 0,
-                bounties_approved: 0,
-                last_council_request_at: 0,
-            },
-        );
+        maintainers.insert(maintainer, MaintainerRecord::new(0));
         Repo {
             github_repo: "owner/repo".to_string(),
+            github_repo_id: 0,
+            verification_source: "legacy".to_string(),
+            created_at: 0,
             maintainers,
             oracle,
             budget: U128(0),
@@ -170,6 +178,16 @@ mod tests {
             assert_maintainer(&repo, &accounts(2)),
             Err(ContractError::NotMaintainer)
         );
+    }
+
+    #[test]
+    fn council_access() {
+        let mut repo = sample_repo(accounts(2), accounts(1));
+        assert_eq!(assert_council(&repo, &accounts(1)), Err(ContractError::NotCouncil));
+        if let Some(record) = repo.maintainers.get_mut(&accounts(1)) {
+            record.council_derived = true;
+        }
+        assert_eq!(assert_council(&repo, &accounts(1)), Ok(()));
     }
 
     #[test]

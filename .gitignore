@@ -1,17 +1,23 @@
+# Platform local data
+.data/
+app/.data/
+
 # Rust build output
 target/
 *.wasm
+# Runtime wasm bundled into Vercel functions
+!app/wasm/*.wasm
 
 # Environment files
 .env
 .env.*
-!.env.example
 
 # JavaScript / TypeScript
 node_modules/
 .next/
 dist/
 .cache/
+*.tsbuildinfo
 
 # NEAR credentials
 .near-credentials/
@@ -19,7 +25,3 @@ dist/
 # OS / editor noise
 .DS_Store
 *.swp
-
-# Deployment records (public addresses and tx hashes only)
-deployments/*
-!deployments/testnet.json

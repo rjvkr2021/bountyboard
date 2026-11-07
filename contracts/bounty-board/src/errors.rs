@@ -6,6 +6,7 @@ pub enum ContractError {
     NotDao,
     NotOracle,
     NotMaintainer,
+    NotCouncil,
     RepoNotFound,
     IssueNotFound,
     PayoutNotFound,
@@ -25,6 +26,7 @@ pub enum ContractError {
     PrivateSecurityNoClaims,
     SecurityNotDisclosed,
     SecurityAlreadyDisclosed,
+    InvalidAdvisoryUrl,
     BudgetExceeded,
     DailyCapExceeded,
     BudgetBelowCommitted,
@@ -36,12 +38,15 @@ pub enum ContractError {
     IdentityNotLinked,
     IdentityAlreadyLinked,
     InvalidHandle,
+    InvalidGithubUserId,
+    InvalidRepoMetadata,
     CandidateNotFound,
     CandidateVetoed,
     ChallengeActive,
     AlreadyMaintainer,
     LastMaintainer,
     InsufficientTenure,
+    InsufficientTierHistory,
     CouncilRequestNotFound,
     CouncilRequestActive,
     CouncilCooldown,
@@ -57,6 +62,7 @@ impl std::fmt::Display for ContractError {
             ContractError::NotDao => "caller is not the DAO account",
             ContractError::NotOracle => "caller is not the repository oracle",
             ContractError::NotMaintainer => "caller is not a maintainer",
+            ContractError::NotCouncil => "caller is not a council member",
             ContractError::RepoNotFound => "repository not found",
             ContractError::IssueNotFound => "issue not found",
             ContractError::PayoutNotFound => "payout not found",
@@ -82,6 +88,7 @@ impl std::fmt::Display for ContractError {
             }
             ContractError::SecurityNotDisclosed => "security bounty is not disclosed",
             ContractError::SecurityAlreadyDisclosed => "security bounty is already disclosed",
+            ContractError::InvalidAdvisoryUrl => "advisory URL must be a bounded https URL",
             ContractError::BudgetExceeded => "bounty amount exceeds the repository budget",
             ContractError::DailyCapExceeded => "daily spending cap exceeded",
             ContractError::BudgetBelowCommitted => "budget cannot be below the committed amount",
@@ -93,6 +100,8 @@ impl std::fmt::Display for ContractError {
             ContractError::IdentityNotLinked => "GitHub identity is not linked to a NEAR account",
             ContractError::IdentityAlreadyLinked => "GitHub identity is already linked",
             ContractError::InvalidHandle => "invalid GitHub handle",
+            ContractError::InvalidGithubUserId => "invalid GitHub user id",
+            ContractError::InvalidRepoMetadata => "invalid repository metadata",
             ContractError::CandidateNotFound => "promotion candidate not found",
             ContractError::CandidateVetoed => "promotion candidate was vetoed",
             ContractError::ChallengeActive => "candidate challenge window is still active",
@@ -100,6 +109,9 @@ impl std::fmt::Display for ContractError {
             ContractError::LastMaintainer => "cannot remove the last maintainer",
             ContractError::InsufficientTenure => {
                 "maintainer tenure is below the council promotion minimum"
+            }
+            ContractError::InsufficientTierHistory => {
+                "closed PR history does not meet the council promotion requirements"
             }
             ContractError::CouncilRequestNotFound => "no active council promotion request",
             ContractError::CouncilRequestActive => "a council promotion request is already active",
@@ -143,6 +155,7 @@ mod tests {
             ContractError::PrivateSecurityNoClaims,
             ContractError::SecurityNotDisclosed,
             ContractError::SecurityAlreadyDisclosed,
+            ContractError::InvalidAdvisoryUrl,
             ContractError::WrongIssueKind,
         ];
         for error in errors {

@@ -24,9 +24,8 @@ pub const DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS: u32 = 3;
 pub const DEFAULT_COUNCIL_ROLE_NAME: &str = "council";
 pub const GAS_FOR_PAYOUT: u64 = 30_000_000_000_000;
 pub const GAS_FOR_PAYOUT_CALLBACK: u64 = 20_000_000_000_000;
+pub const GAS_FOR_PAYOUT_CHAIN_CALLBACK: u64 = 70_000_000_000_000;
 pub const GAS_FOR_PAYOUT_TRANSFER_CALLBACK: u64 = 20_000_000_000_000;
-pub const CANDIDATE_POINTS: u32 = 10;
-pub const CANDIDATE_COMPLETED: u64 = 3;
 pub const S0_BOUNTY_TIMES: u32 = 1;
 pub const S0_BOUNTY_MAX_DEADLINE: u64 = 30 * DAY_SECS * 1_000_000_000;
 
@@ -93,6 +92,65 @@ impl Tier {
 }
 
 #[near(serializers = [json, borsh])]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TierCounts {
+    pub s0: u64,
+    pub s1: u64,
+    pub s2: u64,
+    pub s3: u64,
+}
+
+impl TierCounts {
+    pub fn increment(&mut self, tier: Tier) {
+        match tier {
+            Tier::S0 => self.s0 = self.s0.saturating_add(1),
+            Tier::S1 => self.s1 = self.s1.saturating_add(1),
+            Tier::S2 => self.s2 = self.s2.saturating_add(1),
+            Tier::S3 => self.s3 = self.s3.saturating_add(1),
+        }
+    }
+
+    pub fn get(self, tier: Tier) -> u64 {
+        match tier {
+            Tier::S0 => self.s0,
+            Tier::S1 => self.s1,
+            Tier::S2 => self.s2,
+            Tier::S3 => self.s3,
+        }
+    }
+
+    pub fn add(self, other: Self) -> Self {
+        Self {
+            s0: self.s0.saturating_add(other.s0),
+            s1: self.s1.saturating_add(other.s1),
+            s2: self.s2.saturating_add(other.s2),
+            s3: self.s3.saturating_add(other.s3),
+        }
+    }
+
+    pub fn meets(self, required: Self) -> bool {
+        self.s0 >= required.s0
+            && self.s1 >= required.s1
+            && self.s2 >= required.s2
+            && self.s3 >= required.s3
+    }
+}
+
+pub const MAINTAINER_TIER_REQUIREMENTS: TierCounts = TierCounts {
+    s0: 1,
+    s1: 2,
+    s2: 3,
+    s3: 4,
+};
+
+pub const COUNCIL_TIER_REQUIREMENTS: TierCounts = TierCounts {
+    s0: 2,
+    s1: 4,
+    s2: 6,
+    s3: 8,
+};
+
+#[near(serializers = [json, borsh])]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IssueStatus {
     PendingApproval,
@@ -149,6 +207,8 @@ pub struct BoardConfig {
     pub council_promotion_delay_secs: u64,
     pub council_promotion_min_approvals: u32,
     pub council_role_name: String,
+    #[serde(default)]
+    pub payout_bond_required: bool,
 }
 
 impl Default for BoardConfig {
@@ -160,6 +220,7 @@ impl Default for BoardConfig {
             council_promotion_delay_secs: WEEK_SECS,
             council_promotion_min_approvals: DEFAULT_COUNCIL_PROMOTION_MIN_APPROVALS,
             council_role_name: DEFAULT_COUNCIL_ROLE_NAME.to_string(),
+            payout_bond_required: false,
         }
     }
 }
@@ -169,13 +230,50 @@ impl Default for BoardConfig {
 pub struct MaintainerRecord {
     pub since: Timestamp,
     pub bounties_approved: u64,
+    pub closed_by_tier: TierCounts,
     pub last_council_request_at: Timestamp,
+    pub council_derived: bool,
+    pub promoted: bool,
+}
+
+impl MaintainerRecord {
+    pub fn new(since: Timestamp) -> Self {
+        Self {
+            since,
+            bounties_approved: 0,
+            closed_by_tier: TierCounts::default(),
+            last_council_request_at: 0,
+            council_derived: false,
+            promoted: false,
+        }
+    }
+
+    pub fn council(since: Timestamp) -> Self {
+        Self {
+            since,
+            bounties_approved: 0,
+            closed_by_tier: TierCounts::default(),
+            last_council_request_at: 0,
+            council_derived: true,
+            promoted: false,
+        }
+    }
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoMetadata {
+    pub github_repo_id: u64,
+    pub verification_source: String,
 }
 
 #[near(serializers = [json, borsh])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repo {
     pub github_repo: String,
+    pub github_repo_id: u64,
+    pub verification_source: String,
+    pub created_at: Timestamp,
     pub maintainers: BTreeMap<AccountId, MaintainerRecord>,
     pub oracle: AccountId,
     pub budget: U128,
@@ -305,6 +403,7 @@ pub struct Reputation {
     pub total_earned: U128,
     pub points: u32,
     pub has_s1_or_s0: bool,
+    pub completed_by_tier: TierCounts,
     pub payout_ids: Vec<PayoutId>,
 }
 
@@ -317,6 +416,7 @@ pub struct Candidate {
     pub vetoed: bool,
     pub points: u32,
     pub completed: u64,
+    pub completed_by_tier: TierCounts,
 }
 
 #[near(serializers = [json, borsh])]

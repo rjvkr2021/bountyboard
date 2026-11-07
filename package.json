@@ -5,27 +5,19 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "smart-contract:build": "cargo near build non-reproducible-wasm",
-    "dao:fetch": "tsx scripts/fetch-sputnik.ts",
-    "dao:create": "tsx scripts/create-dao.ts",
-    "contract:deploy": "tsx scripts/deploy-bountyboard.ts",
-    "verify:policy": "tsx scripts/verify-policy.ts",
-    "reserve:fund": "tsx scripts/fund-reserve.ts",
-    "check:env": "tsx scripts/check-env.ts",
-    "oracle:mark-merged": "tsx scripts/oracle/mark-merged.ts",
-    "oracle:link-identity": "tsx scripts/link-identity.ts",
-    "oracle:key-command": "bash scripts/create-oracle-key.sh"
-  },
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "near-api-js": "^7.0.0",
-    "zod": "^3.23.8"
+    "test": "vitest run --passWithNoTests scripts",
+    "smart-contract:build": "cargo near build non-reproducible-wasm --manifest-path contracts/bounty-board/Cargo.toml && chmod 644 contracts/bounty-board/target/near/bounty_board.wasm",
+    "fetch:sputnik": "tsx scripts/fetch-sputnik.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "setup:sandbox": "bash scripts/ensure-sandbox.sh",
+    "setup:e2e": "npm run fetch:sputnik && npm run setup:sandbox",
+    "pretest:e2e": "npm run setup:e2e"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "near-workspaces": "^5.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "vitest": "^5.1.0"
   }
 }

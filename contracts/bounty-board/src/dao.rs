@@ -14,7 +14,7 @@ pub trait Dao {
     fn get_policy(&self) -> Policy;
     fn get_proposal(&self, id: u64) -> ProposalOutput;
     fn get_available_amount(&self) -> U128;
-    fn get_bounty(&self, bounty_id: u64) -> BountyOutput;
+    fn get_bounty(&self, id: u64) -> BountyOutput;
 }
 
 #[near(serializers = [json])]
@@ -59,11 +59,22 @@ pub struct Bounty {
 }
 
 #[near(serializers = [json])]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BountyStatus {
+    #[default]
+    Unclaimed,
+    Claimed,
+    Done,
+}
+
+#[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BountyOutput {
     pub id: u64,
     #[serde(flatten)]
     pub bounty: Bounty,
+    #[serde(default, skip_deserializing)]
+    pub status: BountyStatus,
 }
 
 #[near(serializers = [json, borsh])]

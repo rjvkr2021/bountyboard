@@ -12,6 +12,8 @@ pub const EVENT_VERSION: &str = "1.0.0";
 pub struct RepoAdded {
     pub repo_id: RepoId,
     pub github_repo: String,
+    pub github_repo_id: u64,
+    pub verification_source: String,
     pub maintainers: Vec<AccountId>,
     pub oracle: AccountId,
 }
@@ -29,6 +31,21 @@ pub struct RepoBudgetSet {
 pub struct RepoPaused {
     pub repo_id: RepoId,
     pub paused: bool,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoOracleSet {
+    pub repo_id: RepoId,
+    pub oracle: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CouncilMaintainersSynced {
+    pub added: Vec<AccountId>,
+    pub removed: Vec<AccountId>,
+    pub maintainers_len: u32,
 }
 
 #[near(serializers = [json])]
@@ -196,6 +213,7 @@ pub struct CouncilPromotionApproved {
 pub struct IdentityLinked {
     pub handle: String,
     pub account: AccountId,
+    pub github_user_id: Option<u64>,
 }
 
 #[near(serializers = [json])]
@@ -203,6 +221,39 @@ pub struct IdentityLinked {
 pub struct IdentityUnlinked {
     pub handle: String,
     pub account: AccountId,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrivateBountyCreated {
+    pub issue_id: IssueId,
+    pub tier: Tier,
+    pub amount: U128,
+    pub private_ref: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecurityFixed {
+    pub issue_id: IssueId,
+    pub ghsa_id: String,
+    pub advisory_url: String,
+    pub researcher_github: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecurityApprovalConflict {
+    pub issue_id: IssueId,
+    pub approver: AccountId,
+    pub reason: String,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrivateBountyCancelled {
+    pub issue_id: IssueId,
+    pub maintainer: AccountId,
 }
 
 #[near(serializers = [json])]
@@ -244,6 +295,8 @@ fn emit<T: Serialize>(event: &str, data: &T) {
 pub fn repo_added(
     repo_id: RepoId,
     github_repo: String,
+    github_repo_id: u64,
+    verification_source: String,
     maintainers: Vec<AccountId>,
     oracle: AccountId,
 ) {
@@ -252,8 +305,29 @@ pub fn repo_added(
         &RepoAdded {
             repo_id,
             github_repo,
+            github_repo_id,
+            verification_source,
             maintainers,
             oracle,
+        },
+    );
+}
+
+pub fn repo_oracle_set(repo_id: RepoId, oracle: AccountId) {
+    emit("repo_oracle_set", &RepoOracleSet { repo_id, oracle });
+}
+
+pub fn council_maintainers_synced(
+    added: Vec<AccountId>,
+    removed: Vec<AccountId>,
+    maintainers_len: u32,
+) {
+    emit(
+        "council_maintainers_synced",
+        &CouncilMaintainersSynced {
+            added,
+            removed,
+            maintainers_len,
         },
     );
 }
@@ -288,8 +362,15 @@ pub fn spam_marked(issue_id: IssueId, maintainer: AccountId, released: u128) {
     );
 }
 
-pub fn identity_linked(handle: String, account: AccountId) {
-    emit("identity_linked", &IdentityLinked { handle, account });
+pub fn identity_linked(handle: String, account: AccountId, github_user_id: Option<u64>) {
+    emit(
+        "identity_linked",
+        &IdentityLinked {
+            handle,
+            account,
+            github_user_id,
+        },
+    );
 }
 
 pub fn identity_unlinked(handle: String, account: AccountId) {
@@ -313,6 +394,56 @@ pub fn bounty_merged(
             pr_author_account,
             commit,
             source,
+        },
+    );
+}
+
+pub fn private_bounty_created(issue_id: IssueId, tier: Tier, amount: u128, private_ref: String) {
+    emit(
+        "private_bounty_created",
+        &PrivateBountyCreated {
+            issue_id,
+            tier,
+            amount: U128(amount),
+            private_ref,
+        },
+    );
+}
+
+pub fn security_fixed(
+    issue_id: IssueId,
+    ghsa_id: String,
+    advisory_url: String,
+    researcher_github: String,
+) {
+    emit(
+        "security_fixed",
+        &SecurityFixed {
+            issue_id,
+            ghsa_id,
+            advisory_url,
+            researcher_github,
+        },
+    );
+}
+
+pub fn security_approval_conflict(issue_id: IssueId, approver: AccountId, reason: String) {
+    emit(
+        "security_approval_conflict",
+        &SecurityApprovalConflict {
+            issue_id,
+            approver,
+            reason,
+        },
+    );
+}
+
+pub fn private_bounty_cancelled(issue_id: IssueId, maintainer: AccountId) {
+    emit(
+        "private_bounty_cancelled",
+        &PrivateBountyCancelled {
+            issue_id,
+            maintainer,
         },
     );
 }
@@ -547,6 +678,8 @@ mod tests {
             &RepoAdded {
                 repo_id: 0,
                 github_repo: "owner/repo".to_string(),
+                github_repo_id: 42,
+                verification_source: "github_app".to_string(),
                 maintainers: vec![accounts(1)],
                 oracle: accounts(2),
             },
@@ -558,6 +691,8 @@ mod tests {
         assert_eq!(value["event"], "repo_added");
         assert_eq!(value["data"]["repo_id"], 0);
         assert_eq!(value["data"]["github_repo"], "owner/repo");
+        assert_eq!(value["data"]["github_repo_id"], 42);
+        assert_eq!(value["data"]["verification_source"], "github_app");
         assert_eq!(value["data"]["maintainers"][0], accounts(1).to_string());
         assert_eq!(value["data"]["oracle"], accounts(2).to_string());
     }

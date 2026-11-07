@@ -1,7 +1,7 @@
 # BountyBoard contract
 
-Rust (near-sdk v5) contract for the BountyBoard project. See the repository root
-`README.md` and `IMPLEMENTATION.md` for the product and roadmap.
+Rust (near-sdk v5) contract for the BountyBoard platform. See the repository
+root `README.md`, `PLATFORM.md`, and `docs/platform-implementation.md`.
 
 ## Build
 
@@ -28,7 +28,8 @@ These four commands are the required checks for every contract change.
 
 ## Deploy
 
-Testnet only for this project. Never deploy to mainnet without explicit human approval.
+The platform launch adapter deploys one board per repository. For a manual testnet
+deployment, never deploy to mainnet without explicit human approval.
 
 ```bash
 near contract deploy <CONTRACT_ACCOUNT_ID> use-file target/near/bounty_board.wasm \
